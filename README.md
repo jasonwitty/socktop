@@ -83,9 +83,9 @@ loop {
 - Rust 1.75+ (recommended latest stable)
 - Cargo package manager
 
-'''bash
+```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-'''
+```
 
 ### Build from source
 ```bash
