@@ -108,7 +108,7 @@ This will install the `socktop` binary into `~/.cargo/bin`.
 The agent binary listens on a TCP port and serves `/ws`:
 
 ```bash
-socktop_agent 0.0.0.0:8080
+socktop_agent -p 3031
 ```
 
 > **Tip:** You can run the agent under `systemd`, inside a Docker container, or just in a tmux/screen session.
