@@ -85,7 +85,7 @@ loop {
 
 ### Build from source
 ```bash
-git clone https://github.com/YOURNAME/socktop.git
+git clone https://github.com/jasonwitty/socktop.git
 cd socktop
 cargo build --release
 ```
