@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "socktop",
+    "socktop_agent"
+]
+
+[workspace.dependencies]
+# async + streams
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+futures-util = "0.3"
+anyhow = "1.0"
+
+# websocket
+tokio-tungstenite = "0.24"
+tungstenite = "0.24"
+url = "2.5"
+
+# JSON + error handling
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+# system stats
+sysinfo = "0.32"
+
+# CLI UI
+ratatui = "0.28"
+crossterm = "0.27"
+
+# date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# web server (remote-agent)
+axum = { version = "0.7", features = ["ws"] }
