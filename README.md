@@ -83,6 +83,10 @@ loop {
 - Rust 1.75+ (recommended latest stable)
 - Cargo package manager
 
+'''bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+'''
+
 ### Build from source
 ```bash
 git clone https://github.com/jasonwitty/socktop.git
