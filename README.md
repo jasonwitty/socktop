@@ -96,7 +96,8 @@ cargo build --release
 
 ### Install as a cargo binary
 ```bash
-cargo install --path .
+cargo install --path ./socktop/
+cargo install --path ./socktop_agent/
 ```
 This will install the `socktop` binary into `~/.cargo/bin`.
 
