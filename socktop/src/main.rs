@@ -11,12 +11,19 @@ use app::App;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} ws://HOST:PORT/ws", args[0]);
-        std::process::exit(1);
-    }
-    let url = args[1].clone();
+    let mut args = env::args();
+    let prog = args.next().unwrap_or_else(|| "socktop".into());
+    let url = match args.next() {
+        Some(flag) if flag == "-h" || flag == "--help" => {
+            println!("Usage: {prog} ws://HOST:PORT/ws");
+            return Ok(());
+        }
+        Some(url) => url,
+        None => {
+            eprintln!("Usage: {prog} ws://HOST:PORT/ws");
+            std::process::exit(1);
+        }
+    };
 
     let mut app = App::new();
     app.run(&url).await

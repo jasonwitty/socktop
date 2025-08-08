@@ -17,3 +17,5 @@ jobs:
         run: cargo clippy --all-targets --all-features -D warnings
       - name: Build
         run: cargo build --release --workspace
+      - name: Smoke test (client --help)
+        run: cargo run -p socktop -- --help
