@@ -190,6 +190,50 @@ By default, the agent exposes metrics over an unauthenticated WebSocket. For unt
 
 ---
 
+## Using tmux to monitor multiple hosts
+
+You can use tmux to show multiple socktop instances in a single terminal.
+
+Prerequisites:
+- Install tmux (Ubuntu/Debian: `sudo apt-get install tmux`)
+
+Key bindings (defaults):
+- Split left/right: Ctrl-b %
+- Split top/bottom: Ctrl-b "
+- Move between panes: Ctrl-b + Arrow keys
+- Show pane numbers: Ctrl-b q
+- Close a pane: Ctrl-b x
+- Detach from session: Ctrl-b d
+
+Two panes (left/right)
+- This creates a session named "socktop", splits it horizontally, and starts two socktops.
+
+```bash
+tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
+  split-window -h 'socktop ws://HOST2:3000/ws' \; \
+  select-layout even-horizontal \; \
+  attach
+```
+
+Four panes (top-left, top-right, bottom-left, bottom-right)
+- This creates a 2x2 grid with one socktop per pane.
+
+```bash
+tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
+  split-window -h 'socktop ws://HOST2:3000/ws' \; \
+  select-pane -t 0 \; split-window -v 'socktop ws://HOST3:3000/ws' \; \
+  select-pane -t 1 \; split-window -v 'socktop ws://HOST4:3000/ws' \; \
+  select-layout tiled \; \
+  attach
+```
+
+Tips:
+- Replace HOST1..HOST4 (and ports) with your targets.
+- Reattach later: `tmux attach -t socktop`
+- Kill the session: `tmux kill-session -t socktop`
+
+---
+
 ## Example agent JSON
 `socktop` expects the agent to send metrics in this shape:
 ```json
