@@ -1,0 +1,18 @@
+[Unit]
+Description=Socktop agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/socktop_agent --port 3000
+Environment=RUST_LOG=info
+# Optional auth:
+# Environment=SOCKTOP_TOKEN=changeme
+Restart=on-failure
+User=socktop
+Group=socktop
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

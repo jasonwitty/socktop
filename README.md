@@ -4,7 +4,7 @@
 
 It lets you watch CPU, memory, disks, network, temperatures, and processes on another machine in real-time — from the comfort of your terminal.
 
-![socktop screenshot](docs/socktop-screenshot.png)
+![socktop screenshot](./docs/socktop-screenshot.png)
 
 ---
 
@@ -34,6 +34,46 @@ It lets you watch CPU, memory, disks, network, temperatures, and processes on an
    The TUI app (`socktop`) that connects to the agent’s `/ws` endpoint, receives JSON metrics, and renders them.
 
 The two communicate over a persistent WebSocket connection.
+
+---
+
+## Adaptive (idle-aware) sampling
+
+The socktop agent now samples system metrics only when at least one WebSocket client is connected. When idle (no clients), the sampler sleeps and CPU usage drops to ~0%.
+
+How it works
+- The WebSocket handler increments/decrements a client counter in `AppState` on connect/disconnect.
+- A background sampler wakes when the counter transitions from 0 → >0 and sleeps when it returns to 0.
+- The most recent metrics snapshot is cached as JSON for fast responses.
+
+Cold start behavior
+- If a client requests metrics while the cache is empty (e.g., just started or after a long idle), the agent performs a one-off synchronous collection to respond immediately.
+
+Tuning
+- Sampling interval (active): update `spawn_sampler(state, Duration::from_millis(500))` in `socktop_agent/src/main.rs`.
+- Always-on or low-frequency idle sampling: replace the “sleep when idle” logic in `socktop_agent/src/sampler.rs` with a low-frequency interval. Example sketch:
+
+```rust
+// In sampler.rs (sketch): sample every 10s when idle, 500ms when active
+let idle_period = Duration::from_secs(10);
+loop {
+    let active = state.client_count.load(Ordering::Relaxed) > 0;
+    let period = if active { Duration::from_millis(500) } else { idle_period };
+    let mut ticker = tokio::time::interval(period);
+    ticker.tick().await;
+    if !active {
+        // wake early if a client connects
+        tokio::select! {
+            _ = ticker.tick() => {},
+            _ = state.wake_sampler.notified() => continue,
+        }
+    }
+    let m = collect_metrics(&state).await;
+    if let Ok(js) = serde_json::to_string(&m) {
+        *state.last_json.write().await = js;
+    }
+}
+```
 
 ---
 
@@ -99,11 +139,54 @@ When connected, `socktop` displays:
 
 ---
 
+## Configuring the agent port
+
+The agent listens on TCP port 3000 by default. You can override this via a CLI flag, a positional port argument, or an environment variable:
+
+- CLI flag:
+  - socktop_agent --port 8080
+  - socktop_agent -p 8080
+- Positional:
+  - socktop_agent 8080
+- Environment variable:
+  - SOCKTOP_PORT=8080 socktop_agent
+
+Help:
+- socktop_agent --help
+
+The TUI should point to ws://HOST:PORT/ws, e.g.:
+- cargo run -p socktop -- ws://127.0.0.1:8080/ws
+
+---
+
 ## Keyboard Shortcuts
 
 | Key         | Action     |
 |-------------|------------|
 | `q` or `Esc`| Quit       |
+
+---
+
+## Security (optional token)
+By default, the agent exposes metrics over an unauthenticated WebSocket. For untrusted networks, set an auth token and pass it in the client URL:
+
+- Server:
+  - SOCKTOP_TOKEN=changeme socktop_agent --port 3000
+- Client:
+  - socktop ws://HOST:3000/ws?token=changeme
+
+---
+
+## Platform notes
+- Linux x86_64/AMD/Intel: fully supported.
+- Raspberry Pi:
+  - 64-bit: rustup target add aarch64-unknown-linux-gnu; build on-device for simplicity.
+  - 32-bit: rustup target add armv7-unknown-linux-gnueabihf.
+- Windows:
+  - TUI and agent build/run with stable Rust. Use PowerShell:
+    - cargo run -p socktop_agent -- --port 3000
+    - cargo run -p socktop -- ws://127.0.0.1:3000/ws
+  - CPU temperature may be unavailable; display will show N/A.
 
 ---
 
