@@ -121,7 +121,10 @@ pub fn best_cpu_temp(components: &Components) -> Option<f32> {
         .iter()
         .filter(|c| {
             let label = c.label().to_lowercase();
-            label.contains("cpu") || label.contains("package") || label.contains("tctl") || label.contains("tdie")
+            label.contains("cpu")
+                || label.contains("package")
+                || label.contains("tctl")
+                || label.contains("tdie")
         })
         .filter_map(|c| c.temperature())
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))

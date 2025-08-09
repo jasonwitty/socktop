@@ -1,6 +1,10 @@
 //! App state and main loop: input handling, fetching metrics, updating history, and drawing.
 
-use std::{collections::VecDeque, io, time::{Duration, Instant}};
+use std::{
+    collections::VecDeque,
+    io,
+    time::{Duration, Instant},
+};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -16,7 +20,15 @@ use tokio::time::sleep;
 
 use crate::history::{push_capped, PerCoreHistory};
 use crate::types::Metrics;
-use crate::ui::{header::draw_header, cpu::{draw_cpu_avg_graph, draw_per_core_bars}, mem::draw_mem, swap::draw_swap, disks::draw_disks, net::draw_net_spark, processes::draw_top_processes};
+use crate::ui::{
+    cpu::{draw_cpu_avg_graph, draw_per_core_bars},
+    disks::draw_disks,
+    header::draw_header,
+    mem::draw_mem,
+    net::draw_net_spark,
+    processes::draw_top_processes,
+    swap::draw_swap,
+};
 use crate::ws::{connect, request_metrics};
 
 pub struct App {
@@ -88,7 +100,10 @@ impl App {
             // Input (non-blocking)
             while event::poll(Duration::from_millis(10))? {
                 if let Event::Key(k) = event::read()? {
-                    if matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+                    if matches!(
+                        k.code,
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                    ) {
                         self.should_quit = true;
                     }
                 }
@@ -130,7 +145,9 @@ impl App {
             let rx = ((rx_total.saturating_sub(prx)) as f64 / dt / 1024.0).round() as u64;
             let tx = ((tx_total.saturating_sub(ptx)) as f64 / dt / 1024.0).round() as u64;
             (rx, tx)
-        } else { (0, 0) };
+        } else {
+            (0, 0)
+        };
         self.last_net_totals = Some((rx_total, tx_total, now));
         push_capped(&mut self.rx_hist, rx_kb, 600);
         push_capped(&mut self.tx_hist, tx_kb, 600);
@@ -174,21 +191,33 @@ impl App {
 
         let left_stack = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(6), Constraint::Length(4), Constraint::Length(4)])
+            .constraints([
+                Constraint::Min(6),
+                Constraint::Length(4),
+                Constraint::Length(4),
+            ])
             .split(bottom[0]);
 
         draw_disks(f, left_stack[0], self.last_metrics.as_ref());
         draw_net_spark(
             f,
             left_stack[1],
-            &format!("Download (KB/s) — now: {} | peak: {}", self.rx_hist.back().copied().unwrap_or(0), self.rx_peak),
+            &format!(
+                "Download (KB/s) — now: {} | peak: {}",
+                self.rx_hist.back().copied().unwrap_or(0),
+                self.rx_peak
+            ),
             &self.rx_hist,
             ratatui::style::Color::Green,
         );
         draw_net_spark(
             f,
             left_stack[2],
-            &format!("Upload (KB/s) — now: {} | peak: {}", self.tx_hist.back().copied().unwrap_or(0), self.tx_peak),
+            &format!(
+                "Upload (KB/s) — now: {} | peak: {}",
+                self.tx_hist.back().copied().unwrap_or(0),
+                self.tx_peak
+            ),
             &self.tx_hist,
             ratatui::style::Color::Blue,
         );

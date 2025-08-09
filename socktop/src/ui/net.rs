@@ -1,11 +1,11 @@
 //! Network sparklines (download/upload).
 
-use std::collections::VecDeque;
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
     widgets::{Block, Borders, Sparkline},
 };
+use std::collections::VecDeque;
 
 pub fn draw_net_spark(
     f: &mut ratatui::Frame<'_>,
@@ -19,7 +19,11 @@ pub fn draw_net_spark(
     let data: Vec<u64> = hist.iter().skip(start).cloned().collect();
 
     let spark = Sparkline::default()
-        .block(Block::default().borders(Borders::ALL).title(title.to_string()))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title.to_string()),
+        )
         .data(&data)
         .style(Style::default().fg(color));
     f.render_widget(spark, area);

@@ -17,7 +17,10 @@ pub struct PerCoreHistory {
 
 impl PerCoreHistory {
     pub fn new(cap: usize) -> Self {
-        Self { deques: Vec::new(), cap }
+        Self {
+            deques: Vec::new(),
+            cap,
+        }
     }
 
     // Ensure we have one deque per core; resize on CPU topology changes

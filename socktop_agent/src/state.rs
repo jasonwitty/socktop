@@ -1,9 +1,9 @@
 //! Shared agent state: sysinfo handles and hot JSON cache.
 
-use std::{collections::HashMap, sync::Arc};
 use std::sync::atomic::AtomicUsize;
+use std::{collections::HashMap, sync::Arc};
 use sysinfo::{Components, Disks, Networks, System};
-use tokio::sync::{Mutex, RwLock, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 pub type SharedSystem = Arc<Mutex<System>>;
 pub type SharedNetworks = Arc<Mutex<Networks>>;

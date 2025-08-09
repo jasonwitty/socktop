@@ -4,25 +4,26 @@
 mod metrics;
 mod sampler;
 mod state;
-mod ws;
 mod types;
+mod ws;
 
 use axum::{routing::get, Router};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration, sync::atomic::AtomicUsize};
-use sysinfo::{
-    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind, RefreshKind,
-    System,
+use std::{
+    collections::HashMap, net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration,
 };
-use tokio::sync::{Mutex, RwLock, Notify};
+use sysinfo::{
+    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
+    RefreshKind, System,
+};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 
-use state::{AppState, SharedTotals};
 use sampler::spawn_sampler;
+use state::{AppState, SharedTotals};
 use ws::ws_handler;
 
 #[tokio::main]
 async fn main() {
-
     // Init logging; configure with RUST_LOG (e.g., RUST_LOG=info).
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -60,7 +61,9 @@ async fn main() {
         // new: adaptive sampling controls
         client_count: Arc::new(AtomicUsize::new(0)),
         wake_sampler: Arc::new(Notify::new()),
-        auth_token: std::env::var("SOCKTOP_TOKEN").ok().filter(|s| !s.is_empty()),
+        auth_token: std::env::var("SOCKTOP_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
 
     // Start background sampler (adjust cadence as needed)
@@ -68,7 +71,9 @@ async fn main() {
 
     // Web app
     let port = resolve_port();
-    let app = Router::new().route("/ws", get(ws_handler)).with_state(state);
+    let app = Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -82,7 +87,6 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
-
 }
 
 // Resolve the listening port from CLI args/env with a 3000 default.
@@ -97,7 +101,10 @@ fn resolve_port() -> u16 {
                 return p;
             }
         }
-        eprintln!("Warning: invalid SOCKTOP_PORT='{}'; using default {}", s, DEFAULT);
+        eprintln!(
+            "Warning: invalid SOCKTOP_PORT='{}'; using default {}",
+            s, DEFAULT
+        );
     }
 
     let mut args = std::env::args().skip(1);
@@ -133,4 +140,3 @@ fn resolve_port() -> u16 {
 
     DEFAULT
 }
-

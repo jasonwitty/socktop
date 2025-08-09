@@ -5,13 +5,16 @@ use crate::metrics::collect_metrics;
 use crate::state::AppState;
 //use serde_json::to_string;
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, interval, MissedTickBehavior};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 
 pub fn spawn_sampler(state: AppState, period: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let idle_period = Duration::from_secs(10);
         loop {
-            let active = state.client_count.load(std::sync::atomic::Ordering::Relaxed) > 0;
+            let active = state
+                .client_count
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0;
             let mut ticker = interval(if active { period } else { idle_period });
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             ticker.tick().await;
