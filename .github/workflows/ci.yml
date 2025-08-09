@@ -11,10 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build
         run: cargo build --release --workspace
       - name: Smoke test (client --help)
