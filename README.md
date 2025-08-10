@@ -182,6 +182,106 @@ By default, the agent exposes metrics over an unauthenticated WebSocket. For unt
 
 ---
 
+## Run socktop agent as a systemd service
+
+Prerequisites
+
+- systemd-based Linux
+- Built or downloaded socktop_agent binary
+- Port 3000 reachable (or adjust)
+
+1. Install the binary
+
+```bash
+# From your project root; adjust path to your built binary if needed
+sudo install -o root -g root -m 0755 ./target/release/socktop_agent /usr/local/bin/socktop_agent
+```
+
+2. Create a dedicated user
+
+```bash
+sudo groupadd --system socktop || true
+# On Debian/Ubuntu the nologin shell is /usr/sbin/nologin; on RHEL/CentOS it may be /sbin/nologin
+sudo useradd --system --gid socktop --create-home --home-dir /var/lib/socktop --shell /usr/sbin/nologin socktop || true
+```
+
+3. Install the systemd unit
+
+```bash
+# Using the provided unit file from this repo
+sudo install -o root -g root -m 0644 docs/socktop-agent.service /etc/systemd/system/socktop-agent.service
+sudo systemctl daemon-reload
+```
+
+4. Enable and start
+
+```bash
+sudo systemctl enable --now socktop-agent.service
+```
+
+5. Verify it’s running
+
+```bash
+sudo systemctl status socktop-agent --no-pager
+sudo journalctl -u socktop-agent -n 100 --no-pager
+
+# Check the port
+ss -ltnp | grep socktop_agent
+
+# Or test locally (adjust if your agent exposes a different endpoint)
+curl -v http://127.0.0.1:3000/ || true
+```
+
+6. Configure authentication (optional)
+
+```bash
+# Add a token without editing the unit file directly
+sudo systemctl edit socktop-agent
+# Then add:
+# [Service]
+# Environment=SOCKTOP_TOKEN=your_strong_token
+
+sudo systemctl daemon-reload
+sudo systemctl restart socktop-agent
+```
+
+7. Change the listen port (optional)
+
+```bash
+sudo systemctl edit socktop-agent
+# Then add:
+# [Service]
+# ExecStart=
+# ExecStart=/usr/local/bin/socktop_agent --port 8080
+
+sudo systemctl daemon-reload
+sudo systemctl restart socktop-agent
+```
+
+8. Open the firewall (if applicable)
+
+```bash
+# UFW
+sudo ufw allow 3000/tcp
+
+# firewalld
+sudo firewall-cmd --permanent --add-port=3000/tcp
+sudo firewall-cmd --reload
+```
+
+9. Uninstall
+
+```bash
+sudo systemctl disable --now socktop-agent
+sudo rm -f /etc/systemd/system/socktop-agent.service
+sudo systemctl daemon-reload
+sudo rm -f /usr/local/bin/socktop_agent
+sudo userdel -r socktop 2>/dev/null || true
+sudo groupdel socktop 2>/dev/null || true
+```
+
+---
+
 ## Platform notes
 - Linux x86_64/AMD/Intel: fully supported.
 - Raspberry Pi:
