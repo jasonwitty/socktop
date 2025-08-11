@@ -4,7 +4,7 @@
 
 It lets you watch CPU, memory, disks, network, temperatures, and processes on another machine in real-time — from the comfort of your terminal.
 
-![socktop screenshot](./docs/socktop-screenshot.png)
+![socktop screenshot](./docs/14900ks_arch_alacritty_gpu_active.jpg)
 
 ---
 
