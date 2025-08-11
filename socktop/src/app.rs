@@ -7,21 +7,25 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction},
+    layout::{Constraint, Direction, Rect}, // add Rect
     Terminal,
 };
 use tokio::time::sleep;
 
 use crate::history::{push_capped, PerCoreHistory};
 use crate::types::Metrics;
+use crate::ui::cpu::{
+    draw_cpu_avg_graph, draw_per_core_bars, per_core_clamp, per_core_content_area,
+    per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse,
+    PerCoreScrollDrag,
+};
 use crate::ui::{
-    cpu::{draw_cpu_avg_graph, draw_per_core_bars},
     disks::draw_disks,
     header::draw_header,
     mem::draw_mem,
@@ -50,6 +54,9 @@ pub struct App {
 
     // Quit flag
     should_quit: bool,
+
+    pub per_core_scroll: usize,
+    pub per_core_drag: Option<PerCoreScrollDrag>, // new: drag state
 }
 
 impl App {
@@ -64,6 +71,8 @@ impl App {
             rx_peak: 0,
             tx_peak: 0,
             should_quit: false,
+            per_core_scroll: 0,
+            per_core_drag: None,
         }
     }
 
@@ -74,7 +83,7 @@ impl App {
         // Terminal setup
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         terminal.clear()?;
@@ -85,7 +94,7 @@ impl App {
         // Teardown
         disable_raw_mode()?;
         let backend = terminal.backend_mut();
-        execute!(backend, LeaveAlternateScreen)?;
+        execute!(backend, DisableMouseCapture, LeaveAlternateScreen)?;
         terminal.show_cursor()?;
 
         res
@@ -99,13 +108,90 @@ impl App {
         loop {
             // Input (non-blocking)
             while event::poll(Duration::from_millis(10))? {
-                if let Event::Key(k) = event::read()? {
-                    if matches!(
-                        k.code,
-                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
-                    ) {
-                        self.should_quit = true;
+                match event::read()? {
+                    Event::Key(k) => {
+                        if matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+                            self.should_quit = true;
+                        }
+                        // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
+                        let sz = terminal.size()?;
+                        let area = Rect::new(0, 0, sz.width, sz.height);
+                        let rows = ratatui::layout::Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1),
+                                Constraint::Ratio(1, 3),
+                                Constraint::Length(3),
+                                Constraint::Length(3),
+                                Constraint::Min(10),
+                            ])
+                            .split(area);
+                        let top = ratatui::layout::Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+                            .split(rows[1]);
+                        let content = per_core_content_area(top[1]);
+
+                        per_core_handle_key(&mut self.per_core_scroll, k, content.height as usize);
+
+                        let total_rows = self
+                            .last_metrics
+                            .as_ref()
+                            .map(|mm| mm.cpu_per_core.len())
+                            .unwrap_or(0);
+                        per_core_clamp(&mut self.per_core_scroll, total_rows, content.height as usize);
                     }
+                    Event::Mouse(m) => {
+                        // Layout to get areas
+                        let sz = terminal.size()?;
+                        let area = Rect::new(0, 0, sz.width, sz.height);
+                        let rows = ratatui::layout::Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1),
+                                Constraint::Ratio(1, 3),
+                                Constraint::Length(3),
+                                Constraint::Length(3),
+                                Constraint::Min(10),
+                            ])
+                            .split(area);
+                        let top = ratatui::layout::Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+                            .split(rows[1]);
+
+                        // Content wheel scrolling
+                        let content = per_core_content_area(top[1]);
+                        per_core_handle_mouse(
+                            &mut self.per_core_scroll,
+                            m,
+                            content,
+                            content.height as usize,
+                        );
+
+                        // Scrollbar clicks/drag
+                        let total_rows = self
+                            .last_metrics
+                            .as_ref()
+                            .map(|mm| mm.cpu_per_core.len())
+                            .unwrap_or(0);
+                        per_core_handle_scrollbar_mouse(
+                            &mut self.per_core_scroll,
+                            &mut self.per_core_drag,
+                            m,
+                            top[1],
+                            total_rows,
+                        );
+
+                        // Clamp to bounds
+                        per_core_clamp(
+                            &mut self.per_core_scroll,
+                            total_rows,
+                            content.height as usize,
+                        );
+                    }
+                    Event::Resize(_, _) => {}
+                    _ => {}
                 }
             }
             if self.should_quit {
@@ -179,7 +265,13 @@ impl App {
             .split(rows[1]);
 
         draw_cpu_avg_graph(f, top[0], &self.cpu_hist, self.last_metrics.as_ref());
-        draw_per_core_bars(f, top[1], self.last_metrics.as_ref(), &self.per_core_hist);
+        draw_per_core_bars(
+            f,
+            top[1],
+            self.last_metrics.as_ref(),
+            &self.per_core_hist,
+            self.per_core_scroll,
+        );
 
         draw_mem(f, rows[2], self.last_metrics.as_ref());
         draw_swap(f, rows[3], self.last_metrics.as_ref());
@@ -223,5 +315,23 @@ impl App {
         );
 
         draw_top_processes(f, bottom[1], self.last_metrics.as_ref());
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            last_metrics: None,
+            cpu_hist: VecDeque::with_capacity(600),
+            per_core_hist: PerCoreHistory::new(60),
+            last_net_totals: None,
+            rx_hist: VecDeque::with_capacity(600),
+            tx_hist: VecDeque::with_capacity(600),
+            rx_peak: 0,
+            tx_peak: 0,
+            should_quit: false,
+            per_core_scroll: 0,
+            per_core_drag: None,
+        }
     }
 }
