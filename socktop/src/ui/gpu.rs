@@ -15,7 +15,7 @@ fn fmt_bytes(b: u64) -> String {
     if fb >= GB { format!("{:.1}G", fb / GB) }
     else if fb >= MB { format!("{:.1}M", fb / MB) }
     else if fb >= KB { format!("{:.1}K", fb / KB) }
-    else { format!("{}B", b) }
+    else { format!("{b}B") }
 }
 
 pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
@@ -52,9 +52,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     let max_gpus = (area.height / per_gpu_rows) as usize;
     let count = gpus.len().min(max_gpus);
 
-    let constraints = std::iter::repeat(Constraint::Length(1))
-        .take(count * per_gpu_rows as usize)
-        .collect::<Vec<_>>();
+    let constraints = vec![Constraint::Length(1); count * per_gpu_rows as usize];
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -74,7 +72,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     for i in 0..count {
         let g = &gpus[i];
 
-        // Row 1: GPU name (and temp can be appended later)
+        // Row 1: GPU name
         let name_text = g.name.clone();
         f.render_widget(
             Paragraph::new(Span::raw(name_text)).style(Style::default().fg(Color::Gray)),
@@ -106,8 +104,11 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .label(Span::raw(""))
             .ratio(mem_ratio);
         f.render_widget(mem_gauge, mem_cols[0]);
+        // Prepare strings to enable captured identifiers in format!
+        let used_s = fmt_bytes(used);
+        let total_s = fmt_bytes(total);
         f.render_widget(
-            Paragraph::new(Span::raw(format!("vram: {}/{} ({mem_pct}%)", fmt_bytes(used), fmt_bytes(total))))
+            Paragraph::new(Span::raw(format!("vram: {used_s}/{total_s} ({mem_pct}%)")))
                 .style(Style::default().fg(Color::Gray)),
             mem_cols[1],
         );

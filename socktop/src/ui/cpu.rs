@@ -135,7 +135,7 @@ pub fn per_core_handle_scrollbar_mouse(
     if track == 0 {
         return;
     }
-    let thumb_len = ((track * view + total - 1) / total).max(1).min(track);
+    let thumb_len = (track * view).div_ceil(total).max(1).min(track);
     let top_for_offset = |off: usize| -> usize {
         if max_off == 0 {
             0
@@ -340,7 +340,7 @@ pub fn draw_per_core_bars(
         let spark = Sparkline::default().data(&hist).max(100).style(Style::default().fg(fg));
         f.render_widget(spark, hchunks[0]);
 
-        let label = format!("cpu{:<2}{}{:>5.1}%", idx, trend, curr);
+        let label = format!("cpu{idx:<2}{trend}{curr:>5.1}%");
         let line = Line::from(Span::styled(
             label,
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
@@ -361,7 +361,7 @@ pub fn draw_per_core_bars(
         let view = viewport_rows.clamp(1, total);
         let max_off = total.saturating_sub(view);
 
-        let thumb_len = ((track * view + total - 1) / total).max(1).min(track);
+        let thumb_len = (track * view).div_ceil(total).max(1).min(track);
         let thumb_top = if max_off == 0 {
             0
         } else {

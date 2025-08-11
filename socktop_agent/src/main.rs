@@ -79,8 +79,8 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     //output to console
-    println!("Remote agent running at http://{}", addr);
-    println!("WebSocket endpoint: ws://{}/ws", addr);
+    println!("Remote agent running at http://{addr}");
+    println!("WebSocket endpoint: ws://{addr}/ws");
 
     //trace logging
     tracing::info!("Remote agent running at http://{} (ws at /ws)", addr);
@@ -103,8 +103,7 @@ fn resolve_port() -> u16 {
             }
         }
         eprintln!(
-            "Warning: invalid SOCKTOP_PORT='{}'; using default {}",
-            s, DEFAULT
+            "Warning: invalid SOCKTOP_PORT='{s}'; using default {DEFAULT}"
         );
     }
 
@@ -116,12 +115,12 @@ fn resolve_port() -> u16 {
                     match v.parse::<u16>() {
                         Ok(p) if p != 0 => return p,
                         _ => {
-                            eprintln!("Invalid port '{}'; using default {}", v, DEFAULT);
+                            eprintln!("Invalid port '{v}'; using default {DEFAULT}");
                             return DEFAULT;
                         }
                     }
                 } else {
-                    eprintln!("Missing value for {} ; using default {}", arg, DEFAULT);
+                    eprintln!("Missing value for {arg} ; using default {DEFAULT}");
                     return DEFAULT;
                 }
             }
