@@ -87,6 +87,87 @@ loop {
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+Raspberry Pi (required)
+
+- Install GPU support with apt command below
+
+```bash
+sudo apt-get update
+sudo apt-get install libdrm-dev libdrm-amdgpu1
+```
+
+### Install with cargo
+
+Installing with the cargo package manager is the easiest way to install the latest stable version. The cargo package manager comes installed with rustup. Rust is the best programming language ever to be created. If you don't have, you should. Copy and past the sh script line from the prerequisites section above to setup. 
+
+Note: You will need to reload your shell after installation of rustup to do this use the exec command. (example: exec bash, exec fish, exec sh)
+Note for windows users: You will need Visual Studio Community edition installed with C++ build tools in order to compile. Don't be salty about it, your the one using windows.
+
+the commands below will install both the TUI and the agent. Both are stand alone capable, if you are on a remote server and never plan to run the TUI from that server you can only install the agent. Likewise if you dont plan to inspect performance on your local machine you can only install socktop. The agent will by default not do anything without a socket connection, so generally its fine to install on your local machine as it will use very minimal resources waiting for a socket connection.
+
+```bash
+cargo install socktop
+cargo install socktop_agent 
+```
+
+#### copy to a system path:
+
+If you plan to run the agent as a service, execute the following:
+
+```bash
+sudo cp ~/.cargo/bin/socktop_agent /usr/local/bin/
+```
+
+#### Create service account (optional but recommended)
+
+```bash
+sudo groupadd --system socktop || true
+sudo useradd  --system --gid socktop --create-home \
+  --home-dir /var/lib/socktop --shell /usr/sbin/nologin socktop || true
+```
+
+#### Create unit file
+
+```bash
+sudo tee /etc/systemd/system/socktop-agent.service > /dev/null <<'EOF'
+[Unit]
+Description=Socktop Agent
+After=network.target
+
+[Service]
+Type=simple
+User=socktop
+Group=socktop
+# If you did NOT copy to /usr/local/bin, change ExecStart to /home/USERNAME/.cargo/bin/socktop_agent
+ExecStart=/usr/local/bin/socktop_agent --port 3000
+# Environment=SOCKTOP_TOKEN=changeme   # uncomment and set if using auth
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+LimitNOFILE=65535
+WorkingDirectory=/var/lib/socktop
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+#### Reload and enable
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now socktop-agent
+```
+
+#### Update after cargo release
+
+```bash
+cargo install socktop_agent --force
+sudo cp ~/.cargo/bin/socktop_agent /usr/local/bin/
+sudo systemctl restart socktop-agent
+```
+
 ### Build from source
 ```bash
 git clone https://github.com/jasonwitty/socktop.git
@@ -382,7 +463,8 @@ cargo clippy
 - [ ] Filter/sort top processes in the TUI
 - [ ] Export metrics to file
 - [ ] TLS / WSS support
-- [ ] Agent authentication
+- [ x ] Agent authentication
+- [ ] Split processed and jobs into seperate ws calls on different intervals
 
 ---
 

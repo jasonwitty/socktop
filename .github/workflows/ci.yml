@@ -2,6 +2,7 @@ name: CI
 on:
   push:
   pull_request:
+
 jobs:
   build:
     strategy:
@@ -17,7 +18,41 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Build
+      - name: Build (release)
         run: cargo build --release --workspace
       - name: Smoke test (client --help)
         run: cargo run -p socktop -- --help
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -e
+          mkdir dist
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp target/release/socktop.exe dist/
+            cp target/release/socktop_agent.exe dist/
+            7z a socktop-${{ matrix.os }}.zip dist/*
+          else
+            cp target/release/socktop dist/
+            cp target/release/socktop_agent dist/
+            tar czf socktop-${{ matrix.os }}.tar.gz -C dist .
+          fi
+      - name: Upload build artifacts (ephemeral)
+        uses: actions/upload-artifact@v4
+        with:
+          name: socktop-${{ matrix.os }}
+          path: |
+            *.tar.gz
+            *.zip
+      - name: Upload to rolling GitHub Release (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          draft: false
+          files: |
+            *.tar.gz
+            *.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
