@@ -24,6 +24,15 @@ pub struct ProcessInfo {
     pub mem_bytes: u64,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GpuMetrics {
+    pub name: String,
+    pub utilization_gpu_pct: u32,
+    pub mem_used_bytes: u64,
+    pub mem_total_bytes: u64,
+  //  pub vendor: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Metrics {
     pub cpu_total: f32,
@@ -38,4 +47,5 @@ pub struct Metrics {
     pub disks: Vec<Disk>,
     pub networks: Vec<Network>,
     pub top_processes: Vec<ProcessInfo>,
+    pub gpus: Option<Vec<GpuMetrics>>,
 }

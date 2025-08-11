@@ -13,7 +13,8 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Rect}, // add Rect
+    layout::{Constraint, Direction, Rect},
+    //style::Color, // + add Color
     Terminal,
 };
 use tokio::time::sleep;
@@ -33,6 +34,7 @@ use crate::ui::{
     processes::draw_top_processes,
     swap::draw_swap,
 };
+use crate::ui::gpu::draw_gpu;
 use crate::ws::{connect, request_metrics};
 
 pub struct App {
@@ -243,52 +245,77 @@ impl App {
         self.last_metrics = Some(m);
     }
 
-    fn draw(&mut self, f: &mut ratatui::Frame<'_>) {
+    pub fn draw(&mut self, f: &mut ratatui::Frame<'_>) {
         let area = f.area();
 
+        // Root rows: header, top (cpu avg + per-core), memory, swap, bottom
         let rows = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Ratio(1, 3),
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(10),
+                Constraint::Length(1),   // header
+                Constraint::Ratio(1, 3), // top row
+                Constraint::Length(3),   // memory (left) + GPU (right, part 1)
+                Constraint::Length(3),   // swap (left)   + GPU (right, part 2)
+                Constraint::Min(10),     // bottom: disks + net (left), top procs (right)
             ])
             .split(area);
 
+        // Header
         draw_header(f, rows[0], self.last_metrics.as_ref());
 
-        let top = ratatui::layout::Layout::default()
+        // Top row: left CPU avg, right Per-core (full top-right)
+        let top_lr = ratatui::layout::Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
             .split(rows[1]);
 
-        draw_cpu_avg_graph(f, top[0], &self.cpu_hist, self.last_metrics.as_ref());
+        draw_cpu_avg_graph(f, top_lr[0], &self.cpu_hist, self.last_metrics.as_ref());
         draw_per_core_bars(
             f,
-            top[1],
+            top_lr[1],
             self.last_metrics.as_ref(),
             &self.per_core_hist,
             self.per_core_scroll,
         );
 
-        draw_mem(f, rows[2], self.last_metrics.as_ref());
-        draw_swap(f, rows[3], self.last_metrics.as_ref());
+        // Memory + Swap rows split into left/right columns
+        let mem_lr = ratatui::layout::Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+            .split(rows[2]);
+        let swap_lr = ratatui::layout::Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+            .split(rows[3]);
 
-        let bottom = ratatui::layout::Layout::default()
+        // Left: Memory + Swap
+        draw_mem(f, mem_lr[0], self.last_metrics.as_ref());
+        draw_swap(f, swap_lr[0], self.last_metrics.as_ref());
+
+        // Right: GPU spans the same vertical space as Memory + Swap
+        let gpu_area = ratatui::layout::Rect {
+            x: mem_lr[1].x,
+            y: mem_lr[1].y,
+            width: mem_lr[1].width,
+            height: mem_lr[1].height + swap_lr[1].height,
+        };
+        draw_gpu(f, gpu_area, self.last_metrics.as_ref());
+
+        // Bottom area: left = Disks + Network, right = Top Processes
+        let bottom_lr = ratatui::layout::Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
             .split(rows[4]);
 
+        // Left bottom: Disks + Net stacked (network "back up")
         let left_stack = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(6),
-                Constraint::Length(4),
-                Constraint::Length(4),
+                Constraint::Min(7),     // Disks grow
+                Constraint::Length(3),  // Download
+                Constraint::Length(3),  // Upload
             ])
-            .split(bottom[0]);
+            .split(bottom_lr[0]);
 
         draw_disks(f, left_stack[0], self.last_metrics.as_ref());
         draw_net_spark(
@@ -314,7 +341,8 @@ impl App {
             ratatui::style::Color::Blue,
         );
 
-        draw_top_processes(f, bottom[1], self.last_metrics.as_ref());
+        // Right bottom: Top Processes fills the column
+        draw_top_processes(f, bottom_lr[1], self.last_metrics.as_ref());
     }
 }
 

@@ -2,6 +2,7 @@
 
 pub mod cpu;
 pub mod disks;
+pub mod gpu;
 pub mod header;
 pub mod mem;
 pub mod net;

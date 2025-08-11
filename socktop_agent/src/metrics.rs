@@ -1,9 +1,17 @@
 //! Metrics collection using sysinfo. Keeps sysinfo handles in AppState to
 //! avoid repeated allocations and allow efficient refreshes.
 
+
+use crate::gpu::collect_all_gpus;
+
+
+
 use crate::state::AppState;
 use crate::types::{DiskInfo, Metrics, NetworkInfo, ProcessInfo};
+
+
 use sysinfo::{Components, System};
+
 
 pub async fn collect_metrics(state: &AppState) -> Metrics {
     // System (CPU/mem/proc)
@@ -99,6 +107,11 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
         });
     }
 
+    let gpus = match collect_all_gpus() {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    };
+
     Metrics {
         cpu_total: sys.global_cpu_usage(),
         cpu_per_core: sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
@@ -112,6 +125,7 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
         disks,
         networks,
         top_processes: procs,
+        gpus,
     }
 }
 

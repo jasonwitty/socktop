@@ -6,6 +6,7 @@ mod sampler;
 mod state;
 mod types;
 mod ws;
+mod gpu;
 
 use axum::{routing::get, Router};
 use std::{

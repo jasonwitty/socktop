@@ -1,6 +1,7 @@
 //! Data types sent to the client over WebSocket.
 //! Keep this module minimal and stable — it defines the wire format.
 
+use crate::gpu::GpuMetrics;
 use serde::Serialize;
 
 #[derive(Debug, Serialize, Clone)]
@@ -26,7 +27,7 @@ pub struct NetworkInfo {
     pub transmitted: u64,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Serialize)]
 pub struct Metrics {
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
@@ -40,4 +41,5 @@ pub struct Metrics {
     pub disks: Vec<DiskInfo>,
     pub networks: Vec<NetworkInfo>,
     pub top_processes: Vec<ProcessInfo>,
+    pub gpus: Option<Vec<GpuMetrics>>, // new
 }
