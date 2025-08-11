@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Remote system monitor over WebSocket, TUI like top"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
