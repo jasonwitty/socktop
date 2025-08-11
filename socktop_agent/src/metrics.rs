@@ -10,115 +10,119 @@ use crate::state::AppState;
 use crate::types::{DiskInfo, Metrics, NetworkInfo, ProcessInfo};
 
 
-use sysinfo::{Components, System};
-
+use sysinfo::{
+    System, Components,
+    ProcessRefreshKind, RefreshKind, MemoryRefreshKind, CpuRefreshKind, DiskRefreshKind,
+    NetworkRefreshKind,
+};
+use tracing::{warn, error};
 
 pub async fn collect_metrics(state: &AppState) -> Metrics {
-    // System (CPU/mem/proc)
-    let mut sys = state.sys.lock().await;
-    // Simple and safe — can be replaced by more granular refresh if desired:
-    // sys.refresh_cpu(); sys.refresh_memory(); sys.refresh_processes_specifics(...);
-    //sys.refresh_all();
-    //refresh all was found to use 2X CPU rather than individual refreshes
-    sys.refresh_cpu_all();
-    sys.refresh_memory();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    // Lock sysinfo once; if poisoned, recover inner.
+    let mut sys = match state.sys.lock().await {
+        guard => guard, // Mutex from tokio::sync doesn't poison; this is safe
+    };
 
-    let hostname = System::host_name().unwrap_or_else(|| "unknown".into());
+    // Refresh pieces (avoid heavy refresh_all if you already call periodically).
+    // Wrap in catch_unwind in case a crate panics internally.
+    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Newer sysinfo (0.36.x) wants explicit refresh kinds.
+        // Build a minimal RefreshKind instead of refresh_all() to keep it light.
+        let rk = RefreshKind::new()
+            .with_cpu(CpuRefreshKind::everything())
+            .with_memory(MemoryRefreshKind::new())
+            .with_disks(DiskRefreshKind::everything())
+            .with_networks(NetworkRefreshKind::everything())
+            .with_components(); // temps
 
-    // Temps via a persistent Components handle
-    let mut components = state.components.lock().await;
-    components.refresh(true);
-    let cpu_temp_c = best_cpu_temp(&components);
+        sys.refresh_specifics(rk);
 
-    // Disks via a persistent Disks handle
-    let mut disks_struct = state.disks.lock().await;
-    disks_struct.refresh(true);
-    // Filter anything with available == 0 (e.g., overlay/virtual)
-    let disks: Vec<DiskInfo> = disks_struct
-        .list()
+        // Processes: need a separate call with the desired per‑process fields.
+        let prk = ProcessRefreshKind::new()
+            .with_cpu()
+            .with_memory()
+            .with_disk_usage(); // add/remove as needed
+        sys.refresh_processes_specifics(prk, |_| true, true);
+    })) {
+        warn!("system refresh panicked: {:?}", e);
+    }
+
+    // Hostname
+    let hostname = sys.host_name().unwrap_or_else(|| "unknown".to_string());
+
+    // CPU total & per-core
+    let cpu_total = sys.global_cpu_info().cpu_usage();
+    let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+
+    // Memory / swap
+    let mem_total = sys.total_memory();
+    let mem_used  = mem_total.saturating_sub(sys.available_memory());
+    let swap_total = sys.total_swap();
+    let swap_used  = sys.used_swap();
+
+    // Temperature (first CPU-like component if any)
+    let cpu_temp_c = sys
+        .components()
         .iter()
-        .filter(|d| d.available_space() > 0)
-        .map(|d| DiskInfo {
-            name: d.name().to_string_lossy().to_string(),
+        .filter(|c| {
+            let l = c.label().to_ascii_lowercase();
+            l.contains("cpu") || l.contains("package") || l.contains("core 0")
+        })
+        .map(|c| c.temperature() as f32)
+        .next();
+
+    // Disks
+    let disks: Vec<Disk> = sys
+        .disks()
+        .iter()
+        .map(|d| Disk {
+            name: d.name().to_string_lossy().into_owned(),
             total: d.total_space(),
             available: d.available_space(),
         })
         .collect();
 
-    // Networks: use a persistent Networks + rolling totals
-    let mut nets = state.nets.lock().await;
-    nets.refresh(true);
-    let mut totals = state.net_totals.lock().await;
-    let mut networks: Vec<NetworkInfo> = Vec::new();
-    for (name, data) in nets.iter() {
-        // sysinfo: received()/transmitted() are deltas since last refresh
-        let delta_rx = data.received();
-        let delta_tx = data.transmitted();
-
-        let entry = totals.entry(name.clone()).or_insert((0, 0));
-        entry.0 = entry.0.saturating_add(delta_rx);
-        entry.1 = entry.1.saturating_add(delta_tx);
-
-        networks.push(NetworkInfo {
-            name: name.clone(),
-            received: entry.0,
-            transmitted: entry.1,
-        });
-    }
-
-    // Normalize process CPU to 0..100 across all cores
-    let n_cpus = sys.cpus().len().max(1) as f32;
-
-    // Build process list
-    let mut procs: Vec<ProcessInfo> = sys
-        .processes()
-        .values()
-        .map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string_lossy().to_string(),
-            cpu_usage: (p.cpu_usage() / n_cpus).min(100.0),
-            mem_bytes: p.memory(),
+    // Networks (cumulative)
+    let networks: Vec<Network> = sys
+        .networks()
+        .iter()
+        .map(|(_, data)| Network {
+            received: data.received(),
+            transmitted: data.transmitted(),
         })
         .collect();
 
-    // Partial select: get the top 20 by CPU without fully sorting the vector
-    const TOP_N: usize = 20;
-    if procs.len() > TOP_N {
-        // nth index is TOP_N-1 (0-based)
-        let nth = TOP_N - 1;
-        procs.select_nth_unstable_by(nth, |a, b| {
-            b.cpu_usage
-                .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        procs.truncate(TOP_N);
-        // Order those 20 nicely for display
-        procs.sort_by(|a, b| {
-            b.cpu_usage
-                .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    } else {
-        procs.sort_by(|a, b| {
-            b.cpu_usage
-                .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
+    // Processes (top N by cpu)
+    let mut procs: Vec<ProcessInfo> = sys
+        .processes()
+        .iter()
+        .map(|(pid, p)| ProcessInfo {
+            pid: pid.as_u32(),
+            name: p.name().to_string(),
+            cpu_usage: p.cpu_usage(),
+            mem_bytes: p.memory(), // adjust if you use virtual_memory() earlier
+        })
+        .collect();
+    procs.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
+    procs.truncate(30);
 
-    let gpus = match collect_all_gpus() {
+    // GPU metrics (never panic)
+    let gpus = match crate::gpu::collect_all_gpus() {
         Ok(v) if !v.is_empty() => Some(v),
-        _ => None,
+        Ok(_) => None,
+        Err(e) => {
+            warn!("gpu collection failed: {e}");
+            None
+        }
     };
 
     Metrics {
-        cpu_total: sys.global_cpu_usage(),
-        cpu_per_core: sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
-        mem_total: sys.total_memory(),
-        mem_used: sys.used_memory(),
-        swap_total: sys.total_swap(),
-        swap_used: sys.used_swap(),
+        cpu_total,
+        cpu_per_core,
+        mem_total,
+        mem_used,
+        swap_total,
+        swap_used,
         process_count: sys.processes().len(),
         hostname,
         cpu_temp_c,
