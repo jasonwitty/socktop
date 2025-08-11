@@ -112,7 +112,7 @@ cargo install socktop_agent
 
 #### copy to a system path:
 
-If you plan to run the agent as a service, execute the following:
+If you plan to run the agent as a systemd service (linux), execute the following:
 
 ```bash
 sudo cp ~/.cargo/bin/socktop_agent /usr/local/bin/
@@ -373,12 +373,17 @@ sudo groupdel socktop 2>/dev/null || true
     - cargo run -p socktop_agent -- --port 3000
     - cargo run -p socktop -- ws://127.0.0.1:3000/ws
   - CPU temperature may be unavailable; display will show N/A.
+- MacOS
+  - Tested only on Mac/Intel currently
 
 ---
 
 ## Using tmux to monitor multiple hosts
 
 You can use tmux to show multiple socktop instances in a single terminal.
+
+![socktop screenshot](./docs/tmux_4_rpis.jpg)
+monitoring 4 Raspberry Pis using Tmux
 
 Prerequisites:
 - Install tmux (Ubuntu/Debian: `sudo apt-get install tmux`)
