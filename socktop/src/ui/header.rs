@@ -18,7 +18,7 @@ pub fn draw_header(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) 
                 } else {
                     "🔥"
                 };
-                format!("CPU Temp: {:.1}°C {}", t, icon)
+                format!("CPU Temp: {t:.1}°C {icon}")
             })
             .unwrap_or_else(|| "CPU Temp: N/A".into());
         format!(

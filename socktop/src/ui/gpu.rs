@@ -75,7 +75,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         let g = &gpus[i];
 
         // Row 1: GPU name (and temp can be appended later)
-        let name_text = format!("{}", g.name);
+        let name_text = g.name.clone();
         f.render_widget(
             Paragraph::new(Span::raw(name_text)).style(Style::default().fg(Color::Gray)),
             rows[i * 3],
@@ -90,7 +90,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .ratio(util as f64 / 100.0);
         f.render_widget(util_gauge, util_cols[0]);
         f.render_widget(
-            Paragraph::new(Span::raw(format!("util: {}%", util))).style(Style::default().fg(Color::Gray)),
+            Paragraph::new(Span::raw(format!("util: {util}%"))).style(Style::default().fg(Color::Gray)),
             util_cols[1],
         );
 
@@ -107,7 +107,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .ratio(mem_ratio);
         f.render_widget(mem_gauge, mem_cols[0]);
         f.render_widget(
-            Paragraph::new(Span::raw(format!("vram: {}/{} ({}%)", fmt_bytes(used), fmt_bytes(total), mem_pct)))
+            Paragraph::new(Span::raw(format!("vram: {}/{} ({mem_pct}%)", fmt_bytes(used), fmt_bytes(total))))
                 .style(Style::default().fg(Color::Gray)),
             mem_cols[1],
         );

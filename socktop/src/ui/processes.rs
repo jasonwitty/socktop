@@ -64,7 +64,7 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Met
                 Cell::from(p.name.clone()),
                 Cell::from(format!("{:.1}%", p.cpu_usage)).style(Style::default().fg(cpu_fg)),
                 Cell::from(human(p.mem_bytes)),
-                Cell::from(format!("{:.2}%", mem_pct)).style(Style::default().fg(mem_fg)),
+                Cell::from(format!("{mem_pct:.2}%")).style(Style::default().fg(mem_fg)),
             ])
             .style(zebra.patch(emphasis))
         })
