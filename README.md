@@ -50,6 +50,15 @@ exec bash   # or: exec zsh / exec fish
 
 Windows (for the brave): install from https://rustup.rs with the MSVC toolchain. Yes, you’ll need Visual Studio Build Tools. You chose Windows — enjoy the ride.
 
+### Raspberry Pi (required)
+
+Install GPU support with apt command below
+
+```bash
+sudo apt-get update
+sudo apt-get install libdrm-dev libdrm-amdgpu1
+```
+
 ---
 
 ## Architecture
@@ -252,8 +261,9 @@ socktop "ws://HOST:3000/ws?token=changeme"
 - Windows:
   - TUI + agent can build with stable Rust; bring your own MSVC. You’re on Windows; you know the drill.
   - CPU temperature may be unavailable.
+  - binary exe for both available in build artifacts under actions.
 - macOS:
-  - TUI works; agent is primarily targeted at Linux.
+  - TUI works; agent is primarily targeted at Linux. Agent will run just fine on macos for debugging but I have not documented how to run as a service, I may not given the "security" feautures with applications on macos. We will see. 
 
 ---
 
