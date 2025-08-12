@@ -138,7 +138,7 @@ impl App {
                             .as_ref()
                             .map(|mm| mm.cpu_per_core.len())
                             .unwrap_or(0);
-                            per_core_clamp(
+                        per_core_clamp(
                             &mut self.per_core_scroll,
                             total_rows,
                             content.height as usize,

@@ -12,7 +12,7 @@ fn fmt_bytes(b: u64) -> String {
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
     let fb = b as f64;
-    
+
     if fb >= GB {
         format!("{:.1}G", fb / GB)
     } else if fb >= MB {
@@ -21,8 +21,8 @@ fn fmt_bytes(b: u64) -> String {
         format!("{:.1}K", fb / KB)
     } else {
         format!("{b}B")
-       }
     }
+}
 
 pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     let mut area = area;

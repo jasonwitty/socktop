@@ -30,7 +30,6 @@ pub struct AppState {
 }
 
 impl AppState {
-
     #[allow(dead_code)]
     pub fn new() -> Self {
         let sys = System::new(); // targeted refreshes per tick

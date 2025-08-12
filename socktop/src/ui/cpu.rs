@@ -188,7 +188,7 @@ pub fn per_core_handle_scrollbar_mouse(
                 if d.active {
                     let dy = (mouse.row as i32) - (d.start_y as i32);
                     let new_top = (d.start_top as i32 + dy)
-                        .clamp(0, (track.saturating_sub(thumb_len)) as i32) 
+                        .clamp(0, (track.saturating_sub(thumb_len)) as i32)
                         as usize;
                     // Inverse mapping top -> offset
                     if track > thumb_len {
@@ -322,12 +322,12 @@ pub fn draw_per_core_bars(
             .unwrap_or(curr);
 
         let trend = if curr > older + 0.2 {
-             "↑"
+            "↑"
         } else if curr + 0.2 < older {
             "↓"
         } else {
             "╌"
-         };
+        };
 
         let fg = match curr {
             x if x < 25.0 => Color::Green,
