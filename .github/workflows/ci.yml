@@ -14,6 +14,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdrm-dev libdrm-amdgpu1
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Clippy
