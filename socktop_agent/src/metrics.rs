@@ -1,113 +1,83 @@
-//! Metrics collection using sysinfo. Keeps sysinfo handles in AppState to
-//! avoid repeated allocations and allow efficient refreshes.
-
+//! Metrics collection using sysinfo for socktop_agent.
 
 use crate::gpu::collect_all_gpus;
-
-
-
 use crate::state::AppState;
 use crate::types::{DiskInfo, Metrics, NetworkInfo, ProcessInfo};
 
-
-use sysinfo::{
-    System, Components,
-    ProcessRefreshKind, RefreshKind, MemoryRefreshKind, CpuRefreshKind, DiskRefreshKind,
-    NetworkRefreshKind,
-};
-use tracing::{warn, error};
+use sysinfo::{Components, Disks, Networks, System};
+use tracing::warn;
 
 pub async fn collect_metrics(state: &AppState) -> Metrics {
-    // Lock sysinfo once; if poisoned, recover inner.
-    let mut sys = match state.sys.lock().await {
-        guard => guard, // Mutex from tokio::sync doesn't poison; this is safe
-    };
+    let mut sys = state.sys.lock().await;
 
-    // Refresh pieces (avoid heavy refresh_all if you already call periodically).
-    // Wrap in catch_unwind in case a crate panics internally.
     if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Newer sysinfo (0.36.x) wants explicit refresh kinds.
-        // Build a minimal RefreshKind instead of refresh_all() to keep it light.
-        let rk = RefreshKind::new()
-            .with_cpu(CpuRefreshKind::everything())
-            .with_memory(MemoryRefreshKind::new())
-            .with_disks(DiskRefreshKind::everything())
-            .with_networks(NetworkRefreshKind::everything())
-            .with_components(); // temps
-
-        sys.refresh_specifics(rk);
-
-        // Processes: need a separate call with the desired per‑process fields.
-        let prk = ProcessRefreshKind::new()
-            .with_cpu()
-            .with_memory()
-            .with_disk_usage(); // add/remove as needed
-        sys.refresh_processes_specifics(prk, |_| true, true);
+        sys.refresh_all();
     })) {
-        warn!("system refresh panicked: {:?}", e);
+        warn!("sysinfo refresh panicked: {e:?}");
     }
 
-    // Hostname
-    let hostname = sys.host_name().unwrap_or_else(|| "unknown".to_string());
+    // Hostname (associated fn on System in 0.37)
+    let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
 
-    // CPU total & per-core
-    let cpu_total = sys.global_cpu_info().cpu_usage();
+    // CPU usage
+    let cpu_total = sys.global_cpu_usage();
     let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
 
     // Memory / swap
     let mem_total = sys.total_memory();
-    let mem_used  = mem_total.saturating_sub(sys.available_memory());
+    let mem_used = mem_total.saturating_sub(sys.available_memory());
     let swap_total = sys.total_swap();
-    let swap_used  = sys.used_swap();
+    let swap_used = sys.used_swap();
 
-    // Temperature (first CPU-like component if any)
-    let cpu_temp_c = sys
-        .components()
-        .iter()
-        .filter(|c| {
-            let l = c.label().to_ascii_lowercase();
-            l.contains("cpu") || l.contains("package") || l.contains("core 0")
-        })
-        .map(|c| c.temperature() as f32)
-        .next();
+    // Temperature (via Components container)
+    let components = Components::new_with_refreshed_list();
+    let cpu_temp_c = components.iter().find_map(|c| {
+        let l = c.label().to_ascii_lowercase();
+        if l.contains("cpu") || l.contains("package") || l.contains("tctl") || l.contains("tdie") {
+            c.temperature()
+        } else {
+            None
+        }
+    });
 
-    // Disks
-    let disks: Vec<Disk> = sys
-        .disks()
+    // Disks (via Disks container)
+    let disks_list = Disks::new_with_refreshed_list();
+    let disks: Vec<DiskInfo> = disks_list
         .iter()
-        .map(|d| Disk {
+        .map(|d| DiskInfo {
             name: d.name().to_string_lossy().into_owned(),
             total: d.total_space(),
             available: d.available_space(),
         })
         .collect();
 
-    // Networks (cumulative)
-    let networks: Vec<Network> = sys
-        .networks()
+    // Networks (via Networks container) – include interface name
+    let nets = Networks::new_with_refreshed_list();
+    let networks: Vec<NetworkInfo> = nets
         .iter()
-        .map(|(_, data)| Network {
-            received: data.received(),
-            transmitted: data.transmitted(),
+        .map(|(name, data)| NetworkInfo {
+            name: name.to_string(),
+            received: data.total_received(),
+            transmitted: data.total_transmitted(),
         })
         .collect();
 
-    // Processes (top N by cpu)
+    // Processes (top N by CPU)
     let mut procs: Vec<ProcessInfo> = sys
         .processes()
-        .iter()
-        .map(|(pid, p)| ProcessInfo {
-            pid: pid.as_u32(),
-            name: p.name().to_string(),
+        .values()
+        .map(|p| ProcessInfo {
+            pid: p.pid().as_u32(),
+            name: p.name().to_string_lossy().into_owned(),
             cpu_usage: p.cpu_usage(),
-            mem_bytes: p.memory(), // adjust if you use virtual_memory() earlier
+            mem_bytes: p.memory(),
         })
         .collect();
     procs.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
     procs.truncate(30);
 
-    // GPU metrics (never panic)
-    let gpus = match crate::gpu::collect_all_gpus() {
+    // GPU(s)
+    let gpus = match collect_all_gpus() {
         Ok(v) if !v.is_empty() => Some(v),
         Ok(_) => None,
         Err(e) => {
@@ -131,19 +101,4 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
         top_processes: procs,
         gpus,
     }
-}
-
-// Pick the hottest CPU-like sensor (labels vary by platform)
-pub fn best_cpu_temp(components: &Components) -> Option<f32> {
-    components
-        .iter()
-        .filter(|c| {
-            let label = c.label().to_lowercase();
-            label.contains("cpu")
-                || label.contains("package")
-                || label.contains("tctl")
-                || label.contains("tdie")
-        })
-        .filter_map(|c| c.temperature())
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }

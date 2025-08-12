@@ -9,8 +9,7 @@ mod ws;
 mod gpu;
 
 use axum::{routing::get, Router};
-use std::{
-    collections::HashMap, net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration,
+use std::{ net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration,
 };
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
@@ -20,7 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 
 use sampler::spawn_sampler;
-use state::{AppState, SharedTotals};
+use state::{AppState};
 use ws::ws_handler;
 
 #[tokio::main]
@@ -54,10 +53,6 @@ async fn main() {
     // Shared state across requests
     let state = AppState {
         sys: Arc::new(Mutex::new(sys)),
-        nets: Arc::new(Mutex::new(nets)),
-        net_totals: Arc::new(Mutex::new(HashMap::<String, (u64, u64)>::new())) as SharedTotals,
-        components: Arc::new(Mutex::new(components)),
-        disks: Arc::new(Mutex::new(disks)),
         last_json: Arc::new(RwLock::new(String::new())),
         // new: adaptive sampling controls
         client_count: Arc::new(AtomicUsize::new(0)),
