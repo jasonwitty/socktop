@@ -82,15 +82,13 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         let g = &gpus[i];
 
         // Row 1: GPU name
-        let name_text = g.name.clone();
-        f.render_widget(
-            Paragraph::new(Span::raw(name_text)).style(Style::default().fg(Color::Gray)),
-            rows[i * 3],
-        );
+        let name_text = g.name.as_deref().unwrap_or("GPU");
+        let name_p = Paragraph::new(Span::raw(name_text)).style(Style::default().fg(Color::Gray));
+        f.render_widget(name_p, rows[i * 3]);
 
         // Row 2: Utilization bar + right label
         let util_cols = split_bar(rows[i * 3 + 1]);
-        let util = g.utilization_gpu_pct.min(100) as u16;
+        let util = g.utilization.unwrap_or(0.0).clamp(0.0, 100.0) as u16;
         let util_gauge = Gauge::default()
             .gauge_style(Style::default().fg(Color::Green))
             .label(Span::raw(""))
@@ -104,8 +102,8 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
 
         // Row 3: VRAM bar + right label
         let mem_cols = split_bar(rows[i * 3 + 2]);
-        let used = g.mem_used_bytes;
-        let total = g.mem_total_bytes.max(1);
+        let used = g.mem_used.unwrap_or(0);
+        let total = g.mem_total.unwrap_or(1);
         let mem_ratio = used as f64 / total as f64;
         let mem_pct = (mem_ratio * 100.0).round() as u16;
 
@@ -114,7 +112,6 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .label(Span::raw(""))
             .ratio(mem_ratio);
         f.render_widget(mem_gauge, mem_cols[0]);
-        // Prepare strings to enable captured identifiers in format!
         let used_s = fmt_bytes(used);
         let total_s = fmt_bytes(total);
         f.render_widget(

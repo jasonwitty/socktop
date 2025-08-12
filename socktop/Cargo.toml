@@ -9,7 +9,6 @@ license = "MIT"
 [dependencies]
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
-tungstenite = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
@@ -19,3 +18,5 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tungstenite = "0.27.0"

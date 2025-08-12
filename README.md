@@ -1,8 +1,9 @@
 # socktop
 
-**socktop** is a remote system monitor with a rich TUI interface, inspired by `top` and `btop`, that communicates with a lightweight remote agent over WebSockets.
+socktop is a remote system monitor with a rich TUI, inspired by top/btop, talking to a lightweight agent over WebSockets.
 
-It lets you watch CPU, memory, disks, network, temperatures, and processes on another machine in real-time — from the comfort of your terminal.
+- Linux agent: near-zero CPU when idle (request-driven, no always-on sampler)
+- TUI: smooth graphs, sortable process table, scrollbars, readable colors
 
 ![socktop screenshot](./docs/14900ks_arch_alacritty_gpu_active.jpg)
 
@@ -10,430 +11,198 @@ It lets you watch CPU, memory, disks, network, temperatures, and processes on an
 
 ## Features
 
-- 📡 **Remote monitoring** via WebSocket — lightweight agent sends JSON metrics
-- 🖥 **Rich TUI** built with [ratatui](https://github.com/ratatui-org/ratatui)
-- 🔍 **Detailed CPU view** — per-core history, current load, and trends
-- 📊 **Memory, Swap, Disk usage** — human-readable units, color-coded
-- 🌡 **Temperatures** — CPU temperature with visual indicators
-- 📈 **Network throughput** — live sparkline graphs with peak tracking
-- 🏷 **Top processes table** — PID, name, CPU%, memory, and memory%
-- 🎨 Color-coded load, zebra striping for readability
-- ⌨ **Keyboard shortcuts**:
-  - `q` / `Esc` → Quit
+- Remote monitoring via WebSocket (JSON over WS)
+- TUI built with ratatui
+- CPU
+  - Overall sparkline + per-core mini bars
+  - Accurate per-process CPU% (Linux /proc deltas), normalized to 0–100%
+- Memory/Swap gauges with human units
+- Disks: per-device usage
+- Network: per-interface throughput with sparklines and peak markers
+- Temperatures: CPU (optional)
+- Top processes (top 50)
+  - PID, name, CPU%, memory, and memory%
+  - Click-to-sort by CPU% or Mem (descending)
+  - Scrollbar and mouse/keyboard scrolling
+  - Total process count shown in the header
+  - Only top-level processes listed (threads hidden) — matches btop/top
+- Optional GPU metrics (can be disabled)
+- Optional auth token for the agent
+
+---
+
+## Prerequisites: Install Rust (rustup)
+
+Rust is fast, safe, and cross‑platform. Installing it will make your machine better. Consider yourself privileged.
+
+Linux/macOS:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# load cargo for this shell
+source "$HOME/.cargo/env"
+# ensure stable is up to date
+rustup update stable
+rustc --version
+cargo --version
+# after install you may need to reload your shell, e.g.:
+exec bash   # or: exec zsh / exec fish
+```
+
+Windows (for the brave): install from https://rustup.rs with the MSVC toolchain. Yes, you’ll need Visual Studio Build Tools. You chose Windows — enjoy the ride.
 
 ---
 
 ## Architecture
 
-`socktop` has **two components**:
+Two components:
 
-1. **Agent** (remote side)  
-   A small Rust WebSocket server that runs on the target machine and gathers metrics via [sysinfo](https://crates.io/crates/sysinfo).
+1) Agent (remote): small Rust WS server using sysinfo + /proc. It collects on demand when the client asks (fast metrics ~500 ms, processes ~2 s, disks ~5 s). No background loop when nobody is connected.
 
-2. **Client** (local side)  
-   The TUI app (`socktop`) that connects to the agent’s `/ws` endpoint, receives JSON metrics, and renders them.
-
-The two communicate over a persistent WebSocket connection.
+2) Client (local): TUI that connects to ws://HOST:PORT/ws and renders updates.
 
 ---
 
-## Adaptive (idle-aware) sampling
+## Quick start
 
-The socktop agent now samples system metrics only when at least one WebSocket client is connected. When idle (no clients), the sampler sleeps and CPU usage drops to ~0%.
+- Build both binaries:
 
-How it works
-- The WebSocket handler increments/decrements a client counter in `AppState` on connect/disconnect.
-- A background sampler wakes when the counter transitions from 0 → >0 and sleeps when it returns to 0.
-- The most recent metrics snapshot is cached as JSON for fast responses.
-
-Cold start behavior
-- If a client requests metrics while the cache is empty (e.g., just started or after a long idle), the agent performs a one-off synchronous collection to respond immediately.
-
-Tuning
-- Sampling interval (active): update `spawn_sampler(state, Duration::from_millis(500))` in `socktop_agent/src/main.rs`.
-- Always-on or low-frequency idle sampling: replace the “sleep when idle” logic in `socktop_agent/src/sampler.rs` with a low-frequency interval. Example sketch:
-
-```rust
-// In sampler.rs (sketch): sample every 10s when idle, 500ms when active
-let idle_period = Duration::from_secs(10);
-loop {
-    let active = state.client_count.load(Ordering::Relaxed) > 0;
-    let period = if active { Duration::from_millis(500) } else { idle_period };
-    let mut ticker = tokio::time::interval(period);
-    ticker.tick().await;
-    if !active {
-        // wake early if a client connects
-        tokio::select! {
-            _ = ticker.tick() => {},
-            _ = state.wake_sampler.notified() => continue,
-        }
-    }
-    let m = collect_metrics(&state).await;
-    if let Ok(js) = serde_json::to_string(&m) {
-        *state.last_json.write().await = js;
-    }
-}
-```
-
----
-
-## Installation
-
-### Prerequisites
-- Rust 1.75+ (recommended latest stable)
-- Cargo package manager
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Raspberry Pi (required)
-
-- Install GPU support with apt command below
-
-```bash
-sudo apt-get update
-sudo apt-get install libdrm-dev libdrm-amdgpu1
-```
-
-### Install with cargo
-
-Installing with the cargo package manager is the easiest way to install the latest stable version. The cargo package manager comes installed with rustup. Rust is the best programming language ever to be created. If you don't have, you should. Copy and past the sh script line from the prerequisites section above to setup. 
-
-Note: You will need to reload your shell after installation of rustup to do this use the exec command. (example: exec bash, exec fish, exec sh)
-
-Note for windows users: You will need Visual Studio Community edition installed with C++ build tools in order to compile. Don't be salty about it, your the one using windows.
-
-Another Note for Windows users: You can just download compiled binary exe files for both the agent and the terminal ui on the build artifacts section under github actions.
-
-the commands below will install both the TUI and the agent. Both are stand alone capable, if you are on a remote server and never plan to run the TUI from that server you can only install the agent. Likewise if you dont plan to inspect performance on your local machine you can only install socktop. The agent will by default not do anything without a socket connection, so generally its fine to install on your local machine as it will use very minimal resources waiting for a socket connection.
-
-```bash
-cargo install socktop
-cargo install socktop_agent 
-```
-
-#### copy to a system path:
-
-If you plan to run the agent as a systemd service (linux), execute the following:
-
-```bash
-sudo cp ~/.cargo/bin/socktop_agent /usr/local/bin/
-```
-
-#### Create service account (optional but recommended)
-
-```bash
-sudo groupadd --system socktop || true
-sudo useradd  --system --gid socktop --create-home \
-  --home-dir /var/lib/socktop --shell /usr/sbin/nologin socktop || true
-```
-
-#### Create unit file
-
-```bash
-sudo tee /etc/systemd/system/socktop-agent.service > /dev/null <<'EOF'
-[Unit]
-Description=Socktop Agent
-After=network.target
-
-[Service]
-Type=simple
-User=socktop
-Group=socktop
-# If you did NOT copy to /usr/local/bin, change ExecStart to /home/USERNAME/.cargo/bin/socktop_agent
-ExecStart=/usr/local/bin/socktop_agent --port 3000
-# Environment=SOCKTOP_TOKEN=changeme   # uncomment and set if using auth
-Restart=on-failure
-RestartSec=2
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-LimitNOFILE=65535
-WorkingDirectory=/var/lib/socktop
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-#### Reload and enable
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now socktop-agent
-```
-
-#### Update after cargo release
-
-```bash
-cargo install socktop_agent --force
-sudo cp ~/.cargo/bin/socktop_agent /usr/local/bin/
-sudo systemctl restart socktop-agent
-```
-
-### Build from source
 ```bash
 git clone https://github.com/jasonwitty/socktop.git
 cd socktop
 cargo build --release
 ```
 
-### Install as a cargo binary
+- Start the agent on the target machine (default port 3000):
+
 ```bash
-cargo install --path ./socktop/
-cargo install --path ./socktop_agent/
+./target/release/socktop_agent --port 3000
 ```
-This will install the `socktop` binary into `~/.cargo/bin`.
+
+- Connect with the TUI from your local machine:
+
+```bash
+./target/release/socktop ws://REMOTE_HOST:3000/ws
+```
+
+Tip: Add ?token=... if you enable auth (see Security).
 
 ---
 
-## Running
+## Install (from crates.io)
 
-### 1. Start the agent on the remote machine
-The agent binary listens on a TCP port and serves `/ws`:
+You don’t need to clone this repo to use socktop. Install the published binaries with cargo:
 
 ```bash
-socktop_agent -p 3031
+# TUI (client)
+cargo install socktop
+# Agent (server)
+cargo install socktop_agent
 ```
 
-> **Tip:** You can run the agent under `systemd`, inside a Docker container, or just in a tmux/screen session.
+This drops socktop and socktop_agent into ~/.cargo/bin (add it to PATH).
 
-### 2. Connect with the client
-From your local machine:
-```bash
-socktop ws://REMOTE_HOST:8080/ws
-```
+Notes:
+- After installing Rust via rustup, reload your shell (e.g., exec bash) so cargo is on PATH.
+- Windows: you can also grab prebuilt EXEs from GitHub Actions artifacts if rustup scares you. It shouldn’t. Be brave.
 
-Example:
+Option B: System-wide agent (Linux)
 ```bash
-socktop ws://192.168.1.50:8080/ws
+# If you installed with cargo, binaries are in ~/.cargo/bin
+sudo install -o root -g root -m 0755 "$HOME/.cargo/bin/socktop_agent" /usr/local/bin/socktop_agent
+
+# Install and enable the systemd service (example unit in docs/)
+sudo install -o root -g root -m 0644 docs/socktop-agent.service /etc/systemd/system/socktop-agent.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now socktop-agent
 ```
 
 ---
 
 ## Usage
 
-When connected, `socktop` displays:
+Agent (server):
 
-**Left column:**
-- **CPU avg graph** — sparkline of recent overall CPU usage
-- **Memory gauge** — total and used RAM
-- **Swap gauge** — total and used swap
-- **Disks** — usage per device (only devices with available space > 0)
-- **Network Download/Upload** — sparkline in KB/s, with current & peak values
+```bash
+socktop_agent --port 3000
+# or env: SOCKTOP_PORT=3000 socktop_agent
+# optional auth: SOCKTOP_TOKEN=changeme socktop_agent
+```
 
-**Right column:**
-- **Per-core history & trends** — each core’s recent load, current %, and trend arrow
-- **Top processes table** — top 20 processes with PID, name, CPU%, memory usage, and memory%
+Client (TUI):
+
+```bash
+socktop ws://HOST:3000/ws
+# with token:
+socktop "ws://HOST:3000/ws?token=changeme"
+```
+
+Intervals (client-driven):
+- Fast metrics: ~500 ms
+- Processes: ~2 s (top 50)
+- Disks: ~5 s
+
+The agent stays idle unless queried. When queried, it collects just what’s needed.
 
 ---
 
-## Configuring the agent port
+## Updating
 
-The agent listens on TCP port 3000 by default. You can override this via a CLI flag, a positional port argument, or an environment variable:
-
-- CLI flag:
-  - socktop_agent --port 8080
-  - socktop_agent -p 8080
-- Positional:
-  - socktop_agent 8080
-- Environment variable:
-  - SOCKTOP_PORT=8080 socktop_agent
-
-Help:
-- socktop_agent --help
-
-The TUI should point to ws://HOST:PORT/ws, e.g.:
-- cargo run -p socktop -- ws://127.0.0.1:8080/ws
-
----
-
-## Keyboard Shortcuts
-
-| Key         | Action     |
-|-------------|------------|
-| `q` or `Esc`| Quit       |
-
----
-
-## Security (optional token)
-By default, the agent exposes metrics over an unauthenticated WebSocket. For untrusted networks, set an auth token and pass it in the client URL:
-
-- Server:
-  - SOCKTOP_TOKEN=changeme socktop_agent --port 3000
-- Client:
-  - socktop ws://HOST:3000/ws?token=changeme
-
----
-
-## Run socktop agent as a systemd service
-
-Prerequisites
-
-- systemd-based Linux
-- Built or downloaded socktop_agent binary
-- Port 3000 reachable (or adjust)
-
-1. Install the binary
+Update the agent (systemd):
 
 ```bash
-# From your project root; adjust path to your built binary if needed
-sudo install -o root -g root -m 0755 ./target/release/socktop_agent /usr/local/bin/socktop_agent
-```
-
-2. Create a dedicated user
-
-```bash
-sudo groupadd --system socktop || true
-# On Debian/Ubuntu the nologin shell is /usr/sbin/nologin; on RHEL/CentOS it may be /sbin/nologin
-sudo useradd --system --gid socktop --create-home --home-dir /var/lib/socktop --shell /usr/sbin/nologin socktop || true
-```
-
-3. Install the systemd unit
-
-```bash
-# Using the provided unit file from this repo
-sudo install -o root -g root -m 0644 docs/socktop-agent.service /etc/systemd/system/socktop-agent.service
-sudo systemctl daemon-reload
-```
-
-4. Enable and start
-
-```bash
-sudo systemctl enable --now socktop-agent.service
-```
-
-5. Verify it’s running
-
-```bash
+# on the server running the agent
+cargo install socktop_agent --force
+sudo systemctl stop socktop-agent
+sudo install -o root -g root -m 0755 "$HOME/.cargo/bin/socktop_agent" /usr/local/bin/socktop_agent
+# if you changed the unit file:
+# sudo install -o root -g root -m 0644 docs/socktop-agent.service /etc/systemd/system/socktop-agent.service
+# sudo systemctl daemon-reload
+sudo systemctl start socktop-agent
 sudo systemctl status socktop-agent --no-pager
-sudo journalctl -u socktop-agent -n 100 --no-pager
-
-# Check the port
-ss -ltnp | grep socktop_agent
-
-# Or test locally (adjust if your agent exposes a different endpoint)
-curl -v http://127.0.0.1:3000/ || true
+# logs:
+# journalctl -u socktop-agent -f
 ```
 
-6. Configure authentication (optional)
-
+Update the TUI (client):
 ```bash
-# Add a token without editing the unit file directly
-sudo systemctl edit socktop-agent
-# Then add:
-# [Service]
-# Environment=SOCKTOP_TOKEN=your_strong_token
-
-sudo systemctl daemon-reload
-sudo systemctl restart socktop-agent
+cargo install socktop --force
+socktop ws://HOST:3000/ws
 ```
 
-7. Change the listen port (optional)
-
-```bash
-sudo systemctl edit socktop-agent
-# Then add:
-# [Service]
-# ExecStart=
-# ExecStart=/usr/local/bin/socktop_agent --port 8080
-
-sudo systemctl daemon-reload
-sudo systemctl restart socktop-agent
-```
-
-8. Open the firewall (if applicable)
-
-```bash
-# UFW
-sudo ufw allow 3000/tcp
-
-# firewalld
-sudo firewall-cmd --permanent --add-port=3000/tcp
-sudo firewall-cmd --reload
-```
-
-9. Uninstall
-
-```bash
-sudo systemctl disable --now socktop-agent
-sudo rm -f /etc/systemd/system/socktop-agent.service
-sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/socktop_agent
-sudo userdel -r socktop 2>/dev/null || true
-sudo groupdel socktop 2>/dev/null || true
-```
+Tip: If only the binary changed, restart is enough. If the unit file changed, run sudo systemctl daemon-reload.
 
 ---
 
-## Platform notes
-- Linux x86_64/AMD/Intel: fully supported.
-- Raspberry Pi:
-  - 64-bit: rustup target add aarch64-unknown-linux-gnu; build on-device for simplicity.
-  - 32-bit: rustup target add armv7-unknown-linux-gnueabihf.
-- Windows:
-  - TUI and agent build/run with stable Rust. Use PowerShell:
-    - cargo run -p socktop_agent -- --port 3000
-    - cargo run -p socktop -- ws://127.0.0.1:3000/ws
-  - CPU temperature may be unavailable; display will show N/A.
-- MacOS
-  - Tested only on Mac/Intel currently
+## Configuration (agent)
+
+- Port:
+  - Flag: --port 8080 or -p 8080
+  - Positional: socktop_agent 8080
+  - Env: SOCKTOP_PORT=8080
+- Auth token (optional): SOCKTOP_TOKEN=changeme
+- Disable GPU metrics: SOCKTOP_AGENT_GPU=0
+- Disable CPU temperature: SOCKTOP_AGENT_TEMP=0
 
 ---
 
-## Using tmux to monitor multiple hosts
+## Keyboard & Mouse
 
-You can use tmux to show multiple socktop instances in a single terminal.
-
-![socktop screenshot](./docs/tmux_4_rpis.jpg)
-monitoring 4 Raspberry Pis using Tmux
-
-Prerequisites:
-- Install tmux (Ubuntu/Debian: `sudo apt-get install tmux`)
-
-Key bindings (defaults):
-- Split left/right: Ctrl-b %
-- Split top/bottom: Ctrl-b "
-- Move between panes: Ctrl-b + Arrow keys
-- Show pane numbers: Ctrl-b q
-- Close a pane: Ctrl-b x
-- Detach from session: Ctrl-b d
-
-Two panes (left/right)
-- This creates a session named "socktop", splits it horizontally, and starts two socktops.
-
-```bash
-tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
-  split-window -h 'socktop ws://HOST2:3000/ws' \; \
-  select-layout even-horizontal \; \
-  attach
-```
-
-Four panes (top-left, top-right, bottom-left, bottom-right)
-- This creates a 2x2 grid with one socktop per pane.
-
-```bash
-tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
-  split-window -h 'socktop ws://HOST2:3000/ws' \; \
-  select-pane -t 0 \; split-window -v 'socktop ws://HOST3:3000/ws' \; \
-  select-pane -t 1 \; split-window -v 'socktop ws://HOST4:3000/ws' \; \
-  select-layout tiled \; \
-  attach
-```
-
-Tips:
-- Replace HOST1..HOST4 (and ports) with your targets.
-- Reattach later: `tmux attach -t socktop`
-- Kill the session: `tmux kill-session -t socktop`
+- Quit: q or Esc
+- Processes pane:
+  - Click “CPU %” to sort by CPU descending
+  - Click “Mem” to sort by memory descending
+  - Mouse wheel: scroll
+  - Drag scrollbar: scroll
+  - Arrow/PageUp/PageDown/Home/End: scroll
 
 ---
 
 ## Example agent JSON
-`socktop` expects the agent to send metrics in this shape:
+
 ```json
 {
   "cpu_total": 12.4,
-  "cpu_per_core": [11.2, 15.7, ...],
+  "cpu_per_core": [11.2, 15.7],
   "mem_total": 33554432,
   "mem_used": 18321408,
   "swap_total": 0,
@@ -445,43 +214,80 @@ Tips:
   "networks": [{"name":"eth0","received":12345678,"transmitted":87654321}],
   "top_processes": [
     {"pid":1234,"name":"nginx","cpu_usage":1.2,"mem_bytes":12345678}
-  ]
+  ],
+  "gpus": null
 }
 ```
+
+Notes:
+- process_count is merged into the main metrics on the client when processes are polled.
+- top_processes are the current top 50 (sorting in the TUI is client-side).
+
+---
+
+## Security
+
+Set a token on the agent and pass it as a query param from the client:
+
+Server:
+
+```bash
+SOCKTOP_TOKEN=changeme socktop_agent --port 3000
+```
+
+Client:
+
+```bash
+socktop "ws://HOST:3000/ws?token=changeme"
+```
+
+---
+
+## Platform notes
+
+- Linux: fully supported (agent and client).
+- Raspberry Pi:
+  - 64-bit: aarch64-unknown-linux-gnu
+  - 32-bit: armv7-unknown-linux-gnueabihf
+- Windows:
+  - TUI + agent can build with stable Rust; bring your own MSVC. You’re on Windows; you know the drill.
+  - CPU temperature may be unavailable.
+- macOS:
+  - TUI works; agent is primarily targeted at Linux.
 
 ---
 
 ## Development
 
-### Run in debug mode:
-```bash
-cargo run -- ws://127.0.0.1:8080/ws
-```
-
-### Code formatting & lint:
 ```bash
 cargo fmt
-cargo clippy
+cargo clippy --all-targets --all-features
+cargo run -p socktop -- ws://127.0.0.1:3000/ws
+cargo run -p socktop_agent -- --port 3000
 ```
 
 ---
 
 ## Roadmap
-- [ ] Configurable refresh interval
-- [ ] Filter/sort top processes in the TUI
+
+- [x] Agent authentication (token)
+- [x] Hide per-thread entries; only show processes
+- [x] Sort top processes in the TUI
+- [ ] Configurable refresh intervals (client)
 - [ ] Export metrics to file
 - [ ] TLS / WSS support
-- [ x ] Agent authentication
-- [ ] Split processed and jobs into seperate ws calls on different intervals
+- [x] Split processes/disks to separate WS calls with independent cadences (already logical on client; formalize API)
 
 ---
 
 ## License
-MIT License — see [LICENSE](LICENSE).
+
+MIT — see LICENSE.
 
 ---
 
 ## Acknowledgements
-- [`ratatui`](https://github.com/ratatui-org/ratatui) for terminal UI rendering
-- [`sysinfo`](https://crates.io/crates/sysinfo) for system metrics
-- [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) for WebSocket client/server
+
+- ratatui for the TUI
+- sysinfo for system metrics
+- tokio-tungstenite for WebSockets

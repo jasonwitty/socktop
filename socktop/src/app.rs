@@ -25,11 +25,12 @@ use crate::ui::cpu::{
     draw_cpu_avg_graph, draw_per_core_bars, per_core_clamp, per_core_content_area,
     per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse, PerCoreScrollDrag,
 };
+use crate::ui::processes::{processes_handle_key, processes_handle_mouse, ProcSortBy};
 use crate::ui::{
     disks::draw_disks, gpu::draw_gpu, header::draw_header, mem::draw_mem, net::draw_net_spark,
-    processes::draw_top_processes, swap::draw_swap,
+    swap::draw_swap,
 };
-use crate::ws::{connect, request_metrics};
+use crate::ws::{connect, request_disks, request_metrics, request_processes};
 
 pub struct App {
     // Latest metrics + histories
@@ -53,6 +54,15 @@ pub struct App {
 
     pub per_core_scroll: usize,
     pub per_core_drag: Option<PerCoreScrollDrag>, // new: drag state
+    pub procs_scroll_offset: usize,
+    pub procs_drag: Option<PerCoreScrollDrag>,
+    pub procs_sort_by: ProcSortBy,
+    last_procs_area: Option<ratatui::layout::Rect>,
+
+    last_procs_poll: Instant,
+    last_disks_poll: Instant,
+    procs_interval: Duration,
+    disks_interval: Duration,
 }
 
 impl App {
@@ -69,6 +79,18 @@ impl App {
             should_quit: false,
             per_core_scroll: 0,
             per_core_drag: None,
+            procs_scroll_offset: 0,
+            procs_drag: None,
+            procs_sort_by: ProcSortBy::CpuDesc,
+            last_procs_area: None,
+            last_procs_poll: Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now), // trigger immediately on first loop
+            last_disks_poll: Instant::now()
+                .checked_sub(Duration::from_secs(5))
+                .unwrap_or_else(Instant::now),
+            procs_interval: Duration::from_secs(2),
+            disks_interval: Duration::from_secs(5),
         }
     }
 
@@ -143,6 +165,12 @@ impl App {
                             total_rows,
                             content.height as usize,
                         );
+
+                        if let Some(p_area) = self.last_procs_area {
+                            // page size = visible rows (inner height minus header = 1)
+                            let page = p_area.height.saturating_sub(3).max(1) as usize; // borders (2) + header (1)
+                            processes_handle_key(&mut self.procs_scroll_offset, k, page);
+                        }
                     }
                     Event::Mouse(m) => {
                         // Layout to get areas
@@ -192,6 +220,21 @@ impl App {
                             total_rows,
                             content.height as usize,
                         );
+
+                        // Processes table: sort by column on header click
+                        if let (Some(mm), Some(p_area)) =
+                            (self.last_metrics.as_ref(), self.last_procs_area)
+                        {
+                            if let Some(new_sort) = processes_handle_mouse(
+                                &mut self.procs_scroll_offset,
+                                &mut self.procs_drag,
+                                m,
+                                p_area,
+                                mm.top_processes.len(),
+                            ) {
+                                self.procs_sort_by = new_sort;
+                            }
+                        }
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
@@ -204,6 +247,27 @@ impl App {
             // Fetch and update
             if let Some(m) = request_metrics(ws).await {
                 self.update_with_metrics(m);
+
+                // Only poll processes every 2s
+                if self.last_procs_poll.elapsed() >= self.procs_interval {
+                    if let Some(procs) = request_processes(ws).await {
+                        if let Some(mm) = self.last_metrics.as_mut() {
+                            mm.top_processes = procs.top_processes;
+                            mm.process_count = Some(procs.process_count);
+                        }
+                    }
+                    self.last_procs_poll = Instant::now();
+                }
+
+                // Only poll disks every 5s
+                if self.last_disks_poll.elapsed() >= self.disks_interval {
+                    if let Some(disks) = request_disks(ws).await {
+                        if let Some(mm) = self.last_metrics.as_mut() {
+                            mm.disks = disks;
+                        }
+                    }
+                    self.last_disks_poll = Instant::now();
+                }
             }
 
             // Draw
@@ -216,7 +280,21 @@ impl App {
         Ok(())
     }
 
-    fn update_with_metrics(&mut self, m: Metrics) {
+    fn update_with_metrics(&mut self, mut m: Metrics) {
+        if let Some(prev) = &self.last_metrics {
+            // Preserve slower fields when the fast payload omits them
+            if m.disks.is_empty() {
+                m.disks = prev.disks.clone();
+            }
+            if m.top_processes.is_empty() {
+                m.top_processes = prev.top_processes.clone();
+            }
+            // Preserve total processes count across fast updates
+            if m.process_count.is_none() {
+                m.process_count = prev.process_count;
+            }
+        }
+
         // CPU avg history
         let v = m.cpu_total.clamp(0.0, 100.0).round() as u64;
         push_capped(&mut self.cpu_hist, v, 600);
@@ -243,6 +321,7 @@ impl App {
         self.rx_peak = self.rx_peak.max(rx_kb);
         self.tx_peak = self.tx_peak.max(tx_kb);
 
+        // Store merged snapshot
         self.last_metrics = Some(m);
     }
 
@@ -305,16 +384,16 @@ impl App {
         // Bottom area: left = Disks + Network, right = Top Processes
         let bottom_lr = ratatui::layout::Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(rows[4]);
 
-        // Left bottom: Disks + Net stacked (network "back up")
+        // Left bottom: Disks + Net stacked (make net panes slightly taller)
         let left_stack = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(7),    // Disks grow
-                Constraint::Length(3), // Download
-                Constraint::Length(3), // Upload
+                Constraint::Min(4),    // Disks shrink slightly
+                Constraint::Length(5), // Download taller
+                Constraint::Length(5), // Upload taller
             ])
             .split(bottom_lr[0]);
 
@@ -343,7 +422,16 @@ impl App {
         );
 
         // Right bottom: Top Processes fills the column
-        draw_top_processes(f, bottom_lr[1], self.last_metrics.as_ref());
+        let procs_area = bottom_lr[1];
+        // Cache for input handlers
+        self.last_procs_area = Some(procs_area);
+        crate::ui::processes::draw_top_processes(
+            f,
+            procs_area,
+            self.last_metrics.as_ref(),
+            self.procs_scroll_offset,
+            self.procs_sort_by,
+        );
     }
 }
 
@@ -361,6 +449,18 @@ impl Default for App {
             should_quit: false,
             per_core_scroll: 0,
             per_core_drag: None,
+            procs_scroll_offset: 0,
+            procs_drag: None,
+            procs_sort_by: ProcSortBy::CpuDesc,
+            last_procs_area: None,
+            last_procs_poll: Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now), // trigger immediately on first loop
+            last_disks_poll: Instant::now()
+                .checked_sub(Duration::from_secs(5))
+                .unwrap_or_else(Instant::now),
+            procs_interval: Duration::from_secs(2),
+            disks_interval: Duration::from_secs(5),
         }
     }
 }

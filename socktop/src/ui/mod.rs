@@ -8,4 +8,5 @@ pub mod mem;
 pub mod net;
 pub mod processes;
 pub mod swap;
+pub mod theme;
 pub mod util;

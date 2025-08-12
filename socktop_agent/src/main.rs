@@ -9,64 +9,25 @@ mod types;
 mod ws;
 
 use axum::{routing::get, Router};
-use std::{net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration};
+use std::net::SocketAddr;
 
-use sysinfo::{
-    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
-    RefreshKind, System,
-};
-use tokio::sync::{Mutex, Notify, RwLock};
-use tracing_subscriber::EnvFilter;
-
-use sampler::spawn_sampler;
+use crate::sampler::{spawn_disks_sampler, spawn_process_sampler, spawn_sampler};
 use state::AppState;
 use ws::ws_handler;
 
 #[tokio::main]
 async fn main() {
-    // Init logging; configure with RUST_LOG (e.g., RUST_LOG=info).
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .compact()
-        .init();
+    tracing_subscriber::fmt::init();
 
-    // sysinfo build specifics (scopes what refresh_all() will touch internally)
-    let refresh_kind = RefreshKind::nothing()
-        .with_cpu(CpuRefreshKind::everything())
-        .with_memory(MemoryRefreshKind::everything())
-        .with_processes(ProcessRefreshKind::everything());
-
-    // Initialize sysinfo handles once and keep them alive
-    let mut sys = System::new_with_specifics(refresh_kind);
-    sys.refresh_all();
-
-    let mut nets = Networks::new();
-    nets.refresh(true);
-
-    let mut components = Components::new();
-    components.refresh(true);
-
-    let mut disks = Disks::new();
-    disks.refresh(true);
-
-    // Shared state across requests
-    let state = AppState {
-        sys: Arc::new(Mutex::new(sys)),
-        last_json: Arc::new(RwLock::new(String::new())),
-        components: Arc::new(Mutex::new(components)),
-        disks: Arc::new(Mutex::new(disks)),
-        networks: Arc::new(Mutex::new(nets)),
-        // new: adaptive sampling controls
-        client_count: Arc::new(AtomicUsize::new(0)),
-        wake_sampler: Arc::new(Notify::new()),
-        auth_token: std::env::var("SOCKTOP_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty()),
-    };
+    let state = AppState::new();
 
     // Start background sampler (adjust cadence as needed)
-    let _sampler = spawn_sampler(state.clone(), Duration::from_millis(500));
+    // 500ms fast metrics
+    let _h_fast = spawn_sampler(state.clone(), std::time::Duration::from_millis(500));
+    // 2s processes (top 50)
+    let _h_procs = spawn_process_sampler(state.clone(), std::time::Duration::from_secs(2), 50);
+    // 5s disks
+    let _h_disks = spawn_disks_sampler(state.clone(), std::time::Duration::from_secs(5));
 
     // Web app
     let port = resolve_port();

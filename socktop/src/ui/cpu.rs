@@ -1,21 +1,17 @@
 //! CPU average sparkline + per-core mini bars.
 
+use crate::ui::theme::{SB_ARROW, SB_THUMB, SB_TRACK};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::Modifier;
+use ratatui::style::{Color, Style};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline},
 };
 
 use crate::history::PerCoreHistory;
 use crate::types::Metrics;
-
-/// Subtle grey theme for the custom scrollbar
-const SB_ARROW: Color = Color::Rgb(170, 170, 180);
-const SB_TRACK: Color = Color::Rgb(170, 170, 180);
-const SB_THUMB: Color = Color::Rgb(170, 170, 180);
 
 /// State for dragging the scrollbar thumb
 #[derive(Clone, Copy, Debug, Default)]
