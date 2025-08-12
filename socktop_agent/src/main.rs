@@ -54,12 +54,15 @@ async fn main() {
     let state = AppState {
         sys: Arc::new(Mutex::new(sys)),
         last_json: Arc::new(RwLock::new(String::new())),
+        components: Arc::new(Mutex::new(components)),
+        disks: Arc::new(Mutex::new(disks)),
+        networks: Arc::new(Mutex::new(nets)),
         // new: adaptive sampling controls
         client_count: Arc::new(AtomicUsize::new(0)),
         wake_sampler: Arc::new(Notify::new()),
         auth_token: std::env::var("SOCKTOP_TOKEN")
             .ok()
-            .filter(|s| !s.is_empty()),
+            .filter(|s| !s.is_empty())
     };
 
     // Start background sampler (adjust cadence as needed)

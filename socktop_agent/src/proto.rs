@@ -13,13 +13,13 @@ pub struct Metrics {
     pub swap_total_mb: u64,
     pub swap_used_mb: u64,
     pub net_aggregate: NetTotals,
-    pub top_processes: Vec<Proc>,
+    pub top_processes: Vec<Proc>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetTotals {
     pub rx_bytes: u64,
-    pub tx_bytes: u64,
+    pub tx_bytes: u64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,5 +28,5 @@ pub struct Proc {
     pub name: String,
     pub cpu: f32,
     pub mem_mb: u64,
-    pub status: String,
+    pub status: String
 }

@@ -24,7 +24,7 @@ use crate::types::Metrics;
 use crate::ui::cpu::{
     draw_cpu_avg_graph, draw_per_core_bars, per_core_clamp, per_core_content_area,
     per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse,
-    PerCoreScrollDrag,
+    PerCoreScrollDrag
 };
 use crate::ui::{
     disks::draw_disks,
@@ -32,7 +32,7 @@ use crate::ui::{
     mem::draw_mem,
     net::draw_net_spark,
     processes::draw_top_processes,
-    swap::draw_swap,
+    swap::draw_swap
 };
 use crate::ui::gpu::draw_gpu;
 use crate::ws::{connect, request_metrics};
@@ -74,7 +74,7 @@ impl App {
             tx_peak: 0,
             should_quit: false,
             per_core_scroll: 0,
-            per_core_drag: None,
+            per_core_drag: None
         }
     }
 
@@ -125,7 +125,7 @@ impl App {
                                 Constraint::Ratio(1, 3),
                                 Constraint::Length(3),
                                 Constraint::Length(3),
-                                Constraint::Min(10),
+                                Constraint::Min(10)
                             ])
                             .split(area);
                         let top = ratatui::layout::Layout::default()
@@ -154,7 +154,7 @@ impl App {
                                 Constraint::Ratio(1, 3),
                                 Constraint::Length(3),
                                 Constraint::Length(3),
-                                Constraint::Min(10),
+                                Constraint::Min(10)
                             ])
                             .split(area);
                         let top = ratatui::layout::Layout::default()
@@ -256,7 +256,7 @@ impl App {
                 Constraint::Ratio(1, 3), // top row
                 Constraint::Length(3),   // memory (left) + GPU (right, part 1)
                 Constraint::Length(3),   // swap (left)   + GPU (right, part 2)
-                Constraint::Min(10),     // bottom: disks + net (left), top procs (right)
+                Constraint::Min(10)     // bottom: disks + net (left), top procs (right)
             ])
             .split(area);
 
@@ -313,7 +313,7 @@ impl App {
             .constraints([
                 Constraint::Min(7),     // Disks grow
                 Constraint::Length(3),  // Download
-                Constraint::Length(3),  // Upload
+                Constraint::Length(3)  // Upload
             ])
             .split(bottom_lr[0]);
 
@@ -359,7 +359,7 @@ impl Default for App {
             tx_peak: 0,
             should_quit: false,
             per_core_scroll: 0,
-            per_core_drag: None,
+            per_core_drag: None
         }
     }
 }

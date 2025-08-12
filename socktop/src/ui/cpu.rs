@@ -100,7 +100,7 @@ pub fn per_core_handle_scrollbar_mouse(
     drag: &mut Option<PerCoreScrollDrag>,
     mouse: MouseEvent,
     per_core_area: Rect,
-    total_rows: usize,
+    total_rows: usize
 ) {
     // Geometry
     let inner = Rect {
@@ -265,7 +265,7 @@ pub fn draw_per_core_bars(
     area: Rect,
     m: Option<&Metrics>,
     per_core_hist: &PerCoreHistory,
-    scroll_offset: usize,
+    scroll_offset: usize
 ) {
     f.render_widget(
         Block::default().borders(Borders::ALL).title("Per-core"),

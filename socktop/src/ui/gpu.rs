@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::Span,
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph}
 };
 
 use crate::types::Metrics;
@@ -110,7 +110,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         f.render_widget(
             Paragraph::new(Span::raw(format!("vram: {used_s}/{total_s} ({mem_pct}%)")))
                 .style(Style::default().fg(Color::Gray)),
-            mem_cols[1],
+            mem_cols[1]
         );
     }
 }

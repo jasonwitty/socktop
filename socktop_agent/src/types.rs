@@ -9,14 +9,14 @@ pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
     pub cpu_usage: f32,
-    pub mem_bytes: u64,
+    pub mem_bytes: u64
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct DiskInfo {
     pub name: String,
     pub total: u64,
-    pub available: u64,
+    pub available: u64
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -24,7 +24,7 @@ pub struct NetworkInfo {
     pub name: String,
     // cumulative totals since the agent started (client should diff to get rates)
     pub received: u64,
-    pub transmitted: u64,
+    pub transmitted: u64
 }
 
 #[derive(Serialize)]
@@ -41,5 +41,5 @@ pub struct Metrics {
     pub disks: Vec<DiskInfo>,
     pub networks: Vec<NetworkInfo>,
     pub top_processes: Vec<ProcessInfo>,
-    pub gpus: Option<Vec<GpuMetrics>>, // new
+    pub gpus: Option<Vec<GpuMetrics>>
 }

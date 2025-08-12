@@ -3,7 +3,7 @@
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
-    widgets::{Block, Borders, Sparkline},
+    widgets::{Block, Borders, Sparkline}
 };
 use std::collections::VecDeque;
 
@@ -12,7 +12,7 @@ pub fn draw_net_spark(
     area: Rect,
     title: &str,
     hist: &VecDeque<u64>,
-    color: Color,
+    color: Color
 ) {
     let max_points = area.width.saturating_sub(2) as usize;
     let start = hist.len().saturating_sub(max_points);
