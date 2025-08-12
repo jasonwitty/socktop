@@ -15,6 +15,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - name: Install system dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libdrm-dev libdrm-amdgpu1
       - name: Cargo fmt
         run: cargo fmt --all -- --check
