@@ -62,7 +62,7 @@ async fn main() {
         wake_sampler: Arc::new(Notify::new()),
         auth_token: std::env::var("SOCKTOP_TOKEN")
             .ok()
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty()),
     };
 
     // Start background sampler (adjust cadence as needed)
