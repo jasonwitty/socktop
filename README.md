@@ -101,7 +101,10 @@ sudo apt-get install libdrm-dev libdrm-amdgpu1
 Installing with the cargo package manager is the easiest way to install the latest stable version. The cargo package manager comes installed with rustup. Rust is the best programming language ever to be created. If you don't have, you should. Copy and past the sh script line from the prerequisites section above to setup. 
 
 Note: You will need to reload your shell after installation of rustup to do this use the exec command. (example: exec bash, exec fish, exec sh)
+
 Note for windows users: You will need Visual Studio Community edition installed with C++ build tools in order to compile. Don't be salty about it, your the one using windows.
+
+Another Note for Windows users: You can just download compiled binary exe files for both the agent and the terminal ui on the build artifacts section under github actions.
 
 the commands below will install both the TUI and the agent. Both are stand alone capable, if you are on a remote server and never plan to run the TUI from that server you can only install the agent. Likewise if you dont plan to inspect performance on your local machine you can only install socktop. The agent will by default not do anything without a socket connection, so generally its fine to install on your local machine as it will use very minimal resources waiting for a socket connection.
 
