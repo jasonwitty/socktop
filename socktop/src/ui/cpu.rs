@@ -1,5 +1,6 @@
 //! CPU average sparkline + per-core mini bars.
 
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::Modifier;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,15 +8,14 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline},
 };
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind}; // + MouseButton
 
 use crate::history::PerCoreHistory;
 use crate::types::Metrics;
 
 /// Subtle grey theme for the custom scrollbar
-const SB_ARROW: Color = Color::Rgb(170,170,180);
-const SB_TRACK: Color = Color::Rgb(170,170,180);
-const SB_THUMB: Color = Color::Rgb(170,170,180);
+const SB_ARROW: Color = Color::Rgb(170, 170, 180);
+const SB_TRACK: Color = Color::Rgb(170, 170, 180);
+const SB_THUMB: Color = Color::Rgb(170, 170, 180);
 
 /// State for dragging the scrollbar thumb
 #[derive(Clone, Copy, Debug, Default)]
@@ -100,7 +100,7 @@ pub fn per_core_handle_scrollbar_mouse(
     drag: &mut Option<PerCoreScrollDrag>,
     mouse: MouseEvent,
     per_core_area: Rect,
-    total_rows: usize
+    total_rows: usize,
 ) {
     // Geometry
     let inner = Rect {
@@ -188,7 +188,8 @@ pub fn per_core_handle_scrollbar_mouse(
                 if d.active {
                     let dy = (mouse.row as i32) - (d.start_y as i32);
                     let new_top = (d.start_top as i32 + dy)
-                        .clamp(0, (track.saturating_sub(thumb_len)) as i32) as usize;
+                        .clamp(0, (track.saturating_sub(thumb_len)) as i32) 
+                        as usize;
                     // Inverse mapping top -> offset
                     if track > thumb_len {
                         let denom = track - thumb_len;
@@ -322,11 +323,11 @@ pub fn draw_per_core_bars(
 
         let trend = if curr > older + 0.2 {
              "↑"
-         } else if curr + 0.2 < older {
-             "↓"
-         } else {
-             "╌"
-        };
+        } else if curr + 0.2 < older {
+            "↓"
+        } else {
+            "╌"
+         };
 
         let fg = match curr {
             x if x < 25.0 => Color::Green,
@@ -347,8 +348,7 @@ pub fn draw_per_core_bars(
         let spark = Sparkline::default()
             .data(&hist)
             .max(100)
-            .style(Style::default()
-            .fg(fg));
+            .style(Style::default().fg(fg));
 
         f.render_widget(spark, hchunks[0]);
 

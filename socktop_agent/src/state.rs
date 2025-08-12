@@ -45,7 +45,9 @@ impl AppState {
             last_json: Arc::new(RwLock::new(String::new())),
             client_count: Arc::new(AtomicUsize::new(0)),
             wake_sampler: Arc::new(Notify::new()),
-            auth_token: std::env::var("SOCKTOP_TOKEN").ok().filter(|s| !s.is_empty()),
+            auth_token: std::env::var("SOCKTOP_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 }

@@ -97,8 +97,8 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .ratio(util as f64 / 100.0);
         f.render_widget(util_gauge, util_cols[0]);
         f.render_widget(
-        Paragraph::new(Span::raw(format!("util: {util}%")))
-                    .style(Style::default().fg(Color::Gray)),
+            Paragraph::new(Span::raw(format!("util: {util}%")))
+                .style(Style::default().fg(Color::Gray)),
             util_cols[1],
         );
 

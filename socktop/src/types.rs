@@ -30,7 +30,6 @@ pub struct GpuMetrics {
     pub utilization_gpu_pct: u32,
     pub mem_used_bytes: u64,
     pub mem_total_bytes: u64,
-  //  pub vendor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

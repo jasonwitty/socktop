@@ -41,7 +41,11 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
         components.refresh(true);
         components.iter().find_map(|c| {
             let l = c.label().to_ascii_lowercase();
-            if l.contains("cpu") || l.contains("package") || l.contains("tctl") || l.contains("tdie") {
+            if l.contains("cpu")
+                || l.contains("package")
+                || l.contains("tctl")
+                || l.contains("tdie")
+            {
                 c.temperature()
             } else {
                 None

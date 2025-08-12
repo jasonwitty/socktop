@@ -26,8 +26,8 @@ use crate::ui::cpu::{
     per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse, PerCoreScrollDrag,
 };
 use crate::ui::{
-    disks::draw_disks, header::draw_header, mem::draw_mem, net::draw_net_spark,
-    processes::draw_top_processes, swap::draw_swap, gpu::draw_gpu,
+    disks::draw_disks, gpu::draw_gpu, header::draw_header, mem::draw_mem, net::draw_net_spark,
+    processes::draw_top_processes, swap::draw_swap,
 };
 use crate::ws::{connect, request_metrics};
 
@@ -106,7 +106,10 @@ impl App {
             while event::poll(Duration::from_millis(10))? {
                 match event::read()? {
                     Event::Key(k) => {
-                        if matches!(k.code, KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc) {
+                        if matches!(
+                            k.code,
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                        ) {
                             self.should_quit = true;
                         }
                         // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
@@ -135,7 +138,11 @@ impl App {
                             .as_ref()
                             .map(|mm| mm.cpu_per_core.len())
                             .unwrap_or(0);
-                        per_core_clamp(&mut self.per_core_scroll, total_rows, content.height as usize);
+                            per_core_clamp(
+                            &mut self.per_core_scroll,
+                            total_rows,
+                            content.height as usize,
+                        );
                     }
                     Event::Mouse(m) => {
                         // Layout to get areas
@@ -305,9 +312,9 @@ impl App {
         let left_stack = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(7),     // Disks grow
-                Constraint::Length(3),  // Download
-                Constraint::Length(3),  // Upload
+                Constraint::Min(7),    // Disks grow
+                Constraint::Length(3), // Download
+                Constraint::Length(3), // Upload
             ])
             .split(bottom_lr[0]);
 

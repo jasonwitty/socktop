@@ -1,16 +1,16 @@
 //! socktop agent entrypoint: sets up sysinfo handles, launches a sampler,
 //! and serves a WebSocket endpoint at /ws.
 
+mod gpu;
 mod metrics;
 mod sampler;
 mod state;
 mod types;
 mod ws;
-mod gpu;
 
 use axum::{routing::get, Router};
-use std::{ net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration,
-};
+use std::{net::SocketAddr, sync::atomic::AtomicUsize, sync::Arc, time::Duration};
+
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
     RefreshKind, System,
