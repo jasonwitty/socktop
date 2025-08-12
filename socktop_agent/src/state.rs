@@ -26,7 +26,7 @@ pub struct AppState {
     // Cached containers (enumerated once; refreshed per tick)
     pub components: SharedComponents,
     pub disks: SharedDisks,
-    pub networks: SharedNetworks
+    pub networks: SharedNetworks,
 }
 
 impl AppState {
