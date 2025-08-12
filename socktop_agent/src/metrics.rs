@@ -71,7 +71,7 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
             .map(|(name, data)| NetworkInfo {
                 name: name.to_string(),
                 received: data.total_received(),
-                transmitted: data.total_transmitted()
+                transmitted: data.total_transmitted(),
             })
             .collect()
     };
@@ -86,7 +86,7 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
                 pid: p.pid().as_u32(),
                 name: p.name().to_string_lossy().into_owned(),
                 cpu_usage: p.cpu_usage(),
-                mem_bytes: p.memory()
+                mem_bytes: p.memory(),
             })
             .collect()
     };
@@ -133,6 +133,6 @@ pub async fn collect_metrics(state: &AppState) -> Metrics {
         disks,
         networks,
         top_processes: procs,
-        gpus
+        gpus,
     }
 }
