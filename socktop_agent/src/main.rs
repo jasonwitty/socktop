@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 
 use sampler::spawn_sampler;
-use state::{AppState};
+use state::AppState;
 use ws::ws_handler;
 
 #[tokio::main]
@@ -100,9 +100,7 @@ fn resolve_port() -> u16 {
                 return p;
             }
         }
-        eprintln!(
-            "Warning: invalid SOCKTOP_PORT='{s}'; using default {DEFAULT}"
-        );
+        eprintln!("Warning: invalid SOCKTOP_PORT='{s}'; using default {DEFAULT}");
     }
 
     let mut args = std::env::args().skip(1);
