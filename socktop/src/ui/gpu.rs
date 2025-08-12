@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::Span,
-    widgets::{Block, Borders, Gauge, Paragraph}
+    widgets::{Block, Borders, Gauge, Paragraph},
 };
 
 use crate::types::Metrics;
@@ -12,11 +12,17 @@ fn fmt_bytes(b: u64) -> String {
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
     let fb = b as f64;
-    if fb >= GB { format!("{:.1}G", fb / GB) }
-    else if fb >= MB { format!("{:.1}M", fb / MB) }
-    else if fb >= KB { format!("{:.1}K", fb / KB) }
-    else { format!("{b}B") }
-}
+    
+    if fb >= GB {
+        format!("{:.1}G", fb / GB)
+    } else if fb >= MB {
+        format!("{:.1}M", fb / MB)
+    } else if fb >= KB {
+        format!("{:.1}K", fb / KB)
+    } else {
+        format!("{b}B")
+       }
+    }
 
 pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     let mut area = area;
@@ -34,7 +40,10 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     area.x += 1;
     area.width = area.width.saturating_sub(2);
 
-    let Some(metrics) = m else { return; };
+    let Some(metrics) = m else {
+        return;
+    };
+
     let Some(gpus) = metrics.gpus.as_ref() else {
         f.render_widget(Paragraph::new("No GPUs"), area);
         return;
@@ -88,7 +97,8 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .ratio(util as f64 / 100.0);
         f.render_widget(util_gauge, util_cols[0]);
         f.render_widget(
-            Paragraph::new(Span::raw(format!("util: {util}%"))).style(Style::default().fg(Color::Gray)),
+        Paragraph::new(Span::raw(format!("util: {util}%")))
+                    .style(Style::default().fg(Color::Gray)),
             util_cols[1],
         );
 
@@ -110,7 +120,7 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         f.render_widget(
             Paragraph::new(Span::raw(format!("vram: {used_s}/{total_s} ({mem_pct}%)")))
                 .style(Style::default().fg(Color::Gray)),
-            mem_cols[1]
+            mem_cols[1],
         );
     }
 }

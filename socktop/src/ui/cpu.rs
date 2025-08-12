@@ -265,7 +265,7 @@ pub fn draw_per_core_bars(
     area: Rect,
     m: Option<&Metrics>,
     per_core_hist: &PerCoreHistory,
-    scroll_offset: usize
+    scroll_offset: usize,
 ) {
     f.render_widget(
         Block::default().borders(Borders::ALL).title("Per-core"),
@@ -319,7 +319,14 @@ pub fn draw_per_core_bars(
             .and_then(|d| d.iter().rev().nth(20).copied())
             .map(|v| v as f32)
             .unwrap_or(curr);
-        let trend = if curr > older + 0.2 { "↑" } else if curr + 0.2 < older { "↓" } else { "╌" };
+
+        let trend = if curr > older + 0.2 {
+             "↑"
+         } else if curr + 0.2 < older {
+             "↓"
+         } else {
+             "╌"
+        };
 
         let fg = match curr {
             x if x < 25.0 => Color::Green,
@@ -337,7 +344,12 @@ pub fn draw_per_core_bars(
             })
             .unwrap_or_default();
 
-        let spark = Sparkline::default().data(&hist).max(100).style(Style::default().fg(fg));
+        let spark = Sparkline::default()
+            .data(&hist)
+            .max(100)
+            .style(Style::default()
+            .fg(fg));
+
         f.render_widget(spark, hchunks[0]);
 
         let label = format!("cpu{idx:<2}{trend}{curr:>5.1}%");
