@@ -68,7 +68,7 @@ impl App {
             tx_peak: 0,
             should_quit: false,
             per_core_scroll: 0,
-            per_core_drag: None
+            per_core_drag: None,
         }
     }
 
@@ -119,7 +119,7 @@ impl App {
                                 Constraint::Ratio(1, 3),
                                 Constraint::Length(3),
                                 Constraint::Length(3),
-                                Constraint::Min(10)
+                                Constraint::Min(10),
                             ])
                             .split(area);
                         let top = ratatui::layout::Layout::default()
@@ -148,7 +148,7 @@ impl App {
                                 Constraint::Ratio(1, 3),
                                 Constraint::Length(3),
                                 Constraint::Length(3),
-                                Constraint::Min(10)
+                                Constraint::Min(10),
                             ])
                             .split(area);
                         let top = ratatui::layout::Layout::default()
@@ -250,7 +250,7 @@ impl App {
                 Constraint::Ratio(1, 3), // top row
                 Constraint::Length(3),   // memory (left) + GPU (right, part 1)
                 Constraint::Length(3),   // swap (left)   + GPU (right, part 2)
-                Constraint::Min(10)     // bottom: disks + net (left), top procs (right)
+                Constraint::Min(10),     // bottom: disks + net (left), top procs (right)
             ])
             .split(area);
 
@@ -307,7 +307,7 @@ impl App {
             .constraints([
                 Constraint::Min(7),     // Disks grow
                 Constraint::Length(3),  // Download
-                Constraint::Length(3)  // Upload
+                Constraint::Length(3),  // Upload
             ])
             .split(bottom_lr[0]);
 
@@ -353,7 +353,7 @@ impl Default for App {
             tx_peak: 0,
             should_quit: false,
             per_core_scroll: 0,
-            per_core_drag: None
+            per_core_drag: None,
         }
     }
 }
