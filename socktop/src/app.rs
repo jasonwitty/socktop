@@ -7,7 +7,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, EnableMouseCapture, DisableMouseCapture},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -23,18 +23,12 @@ use crate::history::{push_capped, PerCoreHistory};
 use crate::types::Metrics;
 use crate::ui::cpu::{
     draw_cpu_avg_graph, draw_per_core_bars, per_core_clamp, per_core_content_area,
-    per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse,
-    PerCoreScrollDrag
+    per_core_handle_key, per_core_handle_mouse, per_core_handle_scrollbar_mouse, PerCoreScrollDrag,
 };
 use crate::ui::{
-    disks::draw_disks,
-    header::draw_header,
-    mem::draw_mem,
-    net::draw_net_spark,
-    processes::draw_top_processes,
-    swap::draw_swap
+    disks::draw_disks, header::draw_header, mem::draw_mem, net::draw_net_spark,
+    processes::draw_top_processes, swap::draw_swap, gpu::draw_gpu,
 };
-use crate::ui::gpu::draw_gpu;
 use crate::ws::{connect, request_metrics};
 
 pub struct App {
