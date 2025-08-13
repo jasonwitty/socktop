@@ -5,7 +5,7 @@ socktop is a remote system monitor with a rich TUI, inspired by top/btop, talkin
 - Linux agent: near-zero CPU when idle (request-driven, no always-on sampler)
 - TUI: smooth graphs, sortable process table, scrollbars, readable colors
 
-![socktop screenshot](./docs/14900ks_arch_alacritty_gpu_active.jpg)
+![socktop screenshot](./docs/14900ks_arch_alacritty_gpu_active_v2.jpg)
 
 ---
 
@@ -249,6 +249,52 @@ Client:
 ```bash
 socktop "ws://HOST:3000/ws?token=changeme"
 ```
+
+---
+
+## Using tmux to monitor multiple hosts
+
+You can use tmux to show multiple socktop instances in a single terminal.
+
+![socktop screenshot](./docs/tmux_4_rpis_v2.jpg)
+monitoring 4 Raspberry Pis using Tmux
+
+Prerequisites:
+- Install tmux (Ubuntu/Debian: `sudo apt-get install tmux`)
+
+Key bindings (defaults):
+- Split left/right: Ctrl-b %
+- Split top/bottom: Ctrl-b "
+- Move between panes: Ctrl-b + Arrow keys
+- Show pane numbers: Ctrl-b q
+- Close a pane: Ctrl-b x
+- Detach from session: Ctrl-b d
+
+Two panes (left/right)
+- This creates a session named "socktop", splits it horizontally, and starts two socktops.
+
+```bash
+tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
+  split-window -h 'socktop ws://HOST2:3000/ws' \; \
+  select-layout even-horizontal \; \
+  attach
+```
+
+Four panes (top-left, top-right, bottom-left, bottom-right)
+- This creates a 2x2 grid with one socktop per pane.
+
+```bash
+tmux new-session -d -s socktop 'socktop ws://HOST1:3000/ws' \; \
+  split-window -h 'socktop ws://HOST2:3000/ws' \; \
+  select-pane -t 0 \; split-window -v 'socktop ws://HOST3:3000/ws' \; \
+  select-pane -t 1 \; split-window -v 'socktop ws://HOST4:3000/ws' \; \
+  select-layout tiled \; \
+  attach
+```
+
+Tips:
+- Replace HOST1..HOST4 (and ports) with your targets.
+- Reattach later: `tmux attach -t socktop`
 
 ---
 
