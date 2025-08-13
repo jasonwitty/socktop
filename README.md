@@ -256,7 +256,7 @@ socktop "ws://HOST:3000/ws?token=changeme"
 
 You can use tmux to show multiple socktop instances in a single terminal.
 
-![socktop screenshot](./docs/tmux_4_rpis_v2.jpg)
+![socktop screenshot](./docs/tmux_4_rpis_v3.jpg)
 monitoring 4 Raspberry Pis using Tmux
 
 Prerequisites:
