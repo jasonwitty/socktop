@@ -50,7 +50,7 @@ exec bash   # or: exec zsh / exec fish
 
 Windows (for the brave): install from https://rustup.rs with the MSVC toolchain. Yes, you’ll need Visual Studio Build Tools. You chose Windows — enjoy the ride.
 
-### Raspberry Pi (required)
+### Raspberry Pi / Ubuntu (required)
 
 Install GPU support with apt command below
 
