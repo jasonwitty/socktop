@@ -52,7 +52,6 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<(String, Option
     }
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reuse the same parsing logic for testability

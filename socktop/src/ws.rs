@@ -6,13 +6,13 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pemfile::Item;
 use std::io::Read;
 use std::{fs::File, io::BufReader, sync::Arc};
-use url::Url;
 use tokio::net::TcpStream;
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::{
     connect_async, connect_async_tls_with_config, tungstenite::client::IntoClientRequest,
     tungstenite::Message, Connector, MaybeTlsStream, WebSocketStream,
 };
+use url::Url;
 
 use crate::types::{DiskInfo, Metrics, ProcessesPayload};
 

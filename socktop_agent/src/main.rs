@@ -99,7 +99,9 @@ mod tests_cli_agent {
                 "--port" => long = it.next(),
                 "-p" => short = it.next(),
                 _ if a.starts_with("--port=") => {
-                    if let Some((_, v)) = a.split_once('=') { long = Some(v.to_string()); }
+                    if let Some((_, v)) = a.split_once('=') {
+                        long = Some(v.to_string());
+                    }
                 }
                 _ => {}
             }
@@ -111,9 +113,18 @@ mod tests_cli_agent {
 
     #[test]
     fn port_long_short_and_assign() {
-        assert_eq!(parse_port(vec!["agent".into(), "--port".into(), "9001".into()], 8443), 9001);
-        assert_eq!(parse_port(vec!["agent".into(), "-p".into(), "9002".into()], 8443), 9002);
-        assert_eq!(parse_port(vec!["agent".into(), "--port=9003".into()], 8443), 9003);
+        assert_eq!(
+            parse_port(vec!["agent".into(), "--port".into(), "9001".into()], 8443),
+            9001
+        );
+        assert_eq!(
+            parse_port(vec!["agent".into(), "-p".into(), "9002".into()], 8443),
+            9002
+        );
+        assert_eq!(
+            parse_port(vec!["agent".into(), "--port=9003".into()], 8443),
+            9003
+        );
         assert_eq!(parse_port(vec!["agent".into()], 8443), 8443);
     }
 }

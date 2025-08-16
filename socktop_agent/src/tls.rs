@@ -3,7 +3,9 @@ use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
-use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName};
+use openssl::x509::extension::{
+    BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
+};
 use openssl::x509::{X509NameBuilder, X509};
 use std::{
     fs,
