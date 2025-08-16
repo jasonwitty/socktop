@@ -5,7 +5,9 @@ use crate::state::AppState;
 use crate::types::{DiskInfo, Metrics, NetworkInfo, ProcessInfo, ProcessesPayload};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::io;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -198,6 +200,8 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
         .collect()
 }
 
+// Linux-only helpers and implementation using /proc deltas for accurate CPU%.
+#[cfg(target_os = "linux")]
 #[inline]
 fn read_total_jiffies() -> io::Result<u64> {
     // /proc/stat first line: "cpu  user nice system idle iowait irq softirq steal ..."
@@ -216,6 +220,7 @@ fn read_total_jiffies() -> io::Result<u64> {
     Err(io::Error::other("no cpu line"))
 }
 
+#[cfg(target_os = "linux")]
 #[inline]
 fn read_proc_jiffies(pid: u32) -> Option<u64> {
     let path = format!("/proc/{pid}/stat");
@@ -230,11 +235,10 @@ fn read_proc_jiffies(pid: u32) -> Option<u64> {
     Some(utime.saturating_add(stime))
 }
 
-// Replace the body of collect_processes_top_k to use /proc deltas.
-// This makes CPU% = (delta_proc / delta_total) * 100 over the 2s interval.
+/// Collect top processes (Linux variant): compute CPU% via /proc jiffies delta.
+#[cfg(target_os = "linux")]
 pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPayload {
     // Fresh view to avoid lingering entries and select "no tasks" (no per-thread rows).
-    // Only processes, no per-thread entries.
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -305,6 +309,47 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
     ProcessesPayload {
         process_count: total_count,
         top_processes: top_k_sorted(procs, k),
+    }
+}
+
+/// Collect top processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
+#[cfg(not(target_os = "linux"))]
+pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPayload {
+    use tokio::time::sleep;
+
+    let mut sys = state.sys.lock().await;
+
+    // First refresh to set baseline
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        false,
+        ProcessRefreshKind::everything().without_tasks(),
+    );
+    // Small delay so sysinfo can compute CPU deltas on next refresh
+    sleep(Duration::from_millis(250)).await;
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        false,
+        ProcessRefreshKind::everything().without_tasks(),
+    );
+
+    let total_count = sys.processes().len();
+
+    let mut procs: Vec<ProcessInfo> = sys
+        .processes()
+        .values()
+        .map(|p| ProcessInfo {
+            pid: p.pid().as_u32(),
+            name: p.name().to_string_lossy().into_owned(),
+            cpu_usage: p.cpu_usage(),
+            mem_bytes: p.memory(),
+        })
+        .collect();
+
+    procs = top_k_sorted(procs, k);
+    ProcessesPayload {
+        process_count: total_count,
+        top_processes: procs,
     }
 }
 

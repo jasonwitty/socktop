@@ -24,7 +24,7 @@ pub struct AppState {
     pub disks: SharedDisks,
     pub networks: SharedNetworks,
 
-    // For correct per-process CPU% using /proc deltas
+    // For correct per-process CPU% using /proc deltas (Linux only path uses this tracker)
     pub proc_cpu: Arc<Mutex<ProcCpuTracker>>,
 
     // Connection tracking (to allow future idle sleeps if desired)

@@ -63,6 +63,9 @@ pub struct App {
     last_disks_poll: Instant,
     procs_interval: Duration,
     disks_interval: Duration,
+
+    // For reconnects
+    ws_url: String,
 }
 
 impl App {
@@ -91,11 +94,13 @@ impl App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            ws_url: String::new(),
         }
     }
 
     pub async fn run(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Connect to agent
+        self.ws_url = url.to_string();
         let mut ws = connect(url).await?;
 
         // Terminal setup
@@ -244,7 +249,10 @@ impl App {
                 break;
             }
 
-            // Fetch and update
+            // Draw current frame first so the UI never feels blocked
+            terminal.draw(|f| self.draw(f))?;
+
+            // Then fetch and update
             if let Some(m) = request_metrics(ws).await {
                 self.update_with_metrics(m);
 
@@ -268,10 +276,12 @@ impl App {
                     }
                     self.last_disks_poll = Instant::now();
                 }
+            } else {
+                // If we couldn't get metrics, try to reconnect once
+                if let Ok(new_ws) = connect(&self.ws_url).await {
+                    *ws = new_ws;
+                }
             }
-
-            // Draw
-            terminal.draw(|f| self.draw(f))?;
 
             // Tick rate
             sleep(Duration::from_millis(500)).await;
@@ -461,6 +471,7 @@ impl Default for App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            ws_url: String::new(),
         }
     }
 }
