@@ -2,18 +2,57 @@
 
 use flate2::bufread::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
+use rustls::{ClientConfig, RootCertStore};
+use rustls_pemfile::Item;
 use std::io::Read;
+use std::{fs::File, io::BufReader, sync::Arc};
+use url::Url;
 use tokio::net::TcpStream;
 use tokio::time::{interval, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async, connect_async_tls_with_config, tungstenite::client::IntoClientRequest,
+    tungstenite::Message, Connector, MaybeTlsStream, WebSocketStream,
+};
 
 use crate::types::{DiskInfo, Metrics, ProcessesPayload};
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 // Connect to the agent and return the WS stream
-pub async fn connect(url: &str) -> Result<WsStream, Box<dyn std::error::Error>> {
-    let (ws, _) = connect_async(url).await?;
+pub async fn connect(
+    url: &str,
+    tls_ca: Option<&str>,
+) -> Result<WsStream, Box<dyn std::error::Error>> {
+    let mut u = Url::parse(url)?;
+    if let Some(ca_path) = tls_ca {
+        if u.scheme() == "ws" {
+            let _ = u.set_scheme("wss");
+        }
+        return connect_with_ca(u.as_str(), ca_path).await;
+    }
+    let (ws, _) = connect_async(u.as_str()).await?;
+    Ok(ws)
+}
+
+async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn std::error::Error>> {
+    let mut root = RootCertStore::empty();
+    let mut reader = BufReader::new(File::open(ca_path)?);
+    let mut der_certs = Vec::new();
+    while let Ok(Some(item)) = rustls_pemfile::read_one(&mut reader) {
+        if let Item::X509Certificate(der) = item {
+            der_certs.push(der);
+        }
+    }
+    root.add_parsable_certificates(der_certs);
+
+    let cfg = ClientConfig::builder()
+        .with_root_certificates(root)
+        .with_no_client_auth();
+    let cfg = Arc::new(cfg);
+
+    let req = url.into_client_request()?;
+    let (ws, _) =
+        connect_async_tls_with_config(req, None, true, Some(Connector::Rustls(cfg))).await?;
     Ok(ws)
 }
 

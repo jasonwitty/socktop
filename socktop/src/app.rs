@@ -94,9 +94,13 @@ impl App {
         }
     }
 
-    pub async fn run(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(
+        &mut self,
+        url: &str,
+        tls_ca: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Connect to agent
-        let mut ws = connect(url).await?;
+        let mut ws = connect(url, tls_ca).await?;
 
         // Terminal setup
         enable_raw_mode()?;
