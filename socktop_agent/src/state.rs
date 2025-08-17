@@ -1,5 +1,6 @@
 //! Shared agent state: sysinfo handles and hot JSON cache.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ pub type SharedComponents = Arc<Mutex<Components>>;
 pub type SharedDisks = Arc<Mutex<Disks>>;
 pub type SharedNetworks = Arc<Mutex<Networks>>;
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct ProcCpuTracker {
     pub last_total: u64,
@@ -25,6 +27,7 @@ pub struct AppState {
     pub networks: SharedNetworks,
 
     // For correct per-process CPU% using /proc deltas (Linux only path uses this tracker)
+    #[cfg(target_os = "linux")]
     pub proc_cpu: Arc<Mutex<ProcCpuTracker>>,
 
     // Connection tracking (to allow future idle sleeps if desired)
@@ -45,6 +48,7 @@ impl AppState {
             components: Arc::new(Mutex::new(components)),
             disks: Arc::new(Mutex::new(disks)),
             networks: Arc::new(Mutex::new(networks)),
+            #[cfg(target_os = "linux")]
             proc_cpu: Arc::new(Mutex::new(ProcCpuTracker::default())),
             client_count: Arc::new(AtomicUsize::new(0)),
             auth_token: std::env::var("SOCKTOP_TOKEN")

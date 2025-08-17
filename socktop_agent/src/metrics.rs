@@ -4,6 +4,7 @@ use crate::gpu::collect_all_gpus;
 use crate::state::AppState;
 use crate::types::{DiskInfo, Metrics, NetworkInfo, ProcessInfo, ProcessesPayload};
 use once_cell::sync::OnceCell;
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -260,12 +261,20 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
 
     // Compute deltas vs last sample
     let (last_total, mut last_map) = {
-        let mut t = state.proc_cpu.lock().await;
-        let lt = t.last_total;
-        let lm = std::mem::take(&mut t.last_per_pid);
-        t.last_total = total_now;
-        t.last_per_pid = current.clone();
-        (lt, lm)
+        #[cfg(target_os = "linux")]
+        {
+            let mut t = state.proc_cpu.lock().await;
+            let lt = t.last_total;
+            let lm = std::mem::take(&mut t.last_per_pid);
+            t.last_total = total_now;
+            t.last_per_pid = current.clone();
+            (lt, lm)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _: u64 = total_now; // silence unused warning
+            (0u64, HashMap::new())
+        }
     };
 
     // On first run or if total delta is tiny, report zeros
