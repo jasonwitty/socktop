@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "socktop"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "socktop_agent"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "axum",
  "flate2",

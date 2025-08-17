@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::io::{Cursor, Read};
 use std::sync::OnceLock;
 use tokio::net::TcpStream;
-use tokio::time::{interval, timeout, Duration};
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 use crate::types::{DiskInfo, Metrics, ProcessesPayload};
@@ -85,7 +85,6 @@ pub enum Payload {
     Processes(ProcessesPayload),
 }
 
-#[allow(dead_code)]
 fn parse_any_payload(json: &str) -> Result<Payload, serde_json::Error> {
     if let Ok(m) = serde_json::from_str::<Metrics>(json) {
         return Ok(Payload::Metrics(m));
@@ -250,58 +249,4 @@ pub async fn request_processes(ws: &mut WsStream) -> Option<ProcessesPayload> {
         }
     }
     None
-}
-
-#[allow(dead_code)]
-pub async fn start_ws_polling(mut ws: WsStream) {
-    let mut t_fast = interval(Duration::from_millis(500));
-    let mut t_procs = interval(Duration::from_secs(2));
-    let mut t_disks = interval(Duration::from_secs(5));
-
-    let _ = ws.send(Message::Text("get_metrics".into())).await;
-    let _ = ws.send(Message::Text("get_processes".into())).await;
-    let _ = ws.send(Message::Text("get_disks".into())).await;
-
-    loop {
-        tokio::select! {
-            _ = t_fast.tick() => {
-                let _ = ws.send(Message::Text("get_metrics".into())).await;
-            }
-            _ = t_procs.tick() => {
-                let _ = ws.send(Message::Text("get_processes".into())).await;
-            }
-            _ = t_disks.tick() => {
-                let _ = ws.send(Message::Text("get_disks".into())).await;
-            }
-            maybe = ws.next() => {
-                let Some(result) = maybe else { break; };
-                let Ok(msg) = result else { break; };
-                if debug_on() { log_msg(&msg); }
-                match msg {
-                    Message::Binary(b) => {
-                        if let Some(json) = gunzip_to_string(&b) {
-                            if let Ok(payload) = parse_any_payload(&json) {
-                                match payload {
-                                    Payload::Metrics(_m) => {},
-                                    Payload::Disks(_d) => {},
-                                    Payload::Processes(_p) => {},
-                                }
-                            }
-                        }
-                    }
-                    Message::Text(s) => {
-                        if let Ok(payload) = parse_any_payload(&s) {
-                            match payload {
-                                Payload::Metrics(_m) => {},
-                                Payload::Disks(_d) => {},
-                                Payload::Processes(_p) => {},
-                            }
-                        }
-                    }
-                    Message::Close(_) => break,
-                    _ => {}
-                }
-            }
-        }
-    }
 }
