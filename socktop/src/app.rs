@@ -63,6 +63,9 @@ pub struct App {
     last_disks_poll: Instant,
     procs_interval: Duration,
     disks_interval: Duration,
+
+    // For reconnects
+    ws_url: String,
 }
 
 impl App {
@@ -91,6 +94,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            ws_url: String::new(),
         }
     }
 
@@ -99,7 +103,10 @@ impl App {
         url: &str,
         tls_ca: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        
         // Connect to agent
+        //let mut ws = connect(url, tls_ca).await?;
+        self.ws_url = url.to_string();
         let mut ws = connect(url, tls_ca).await?;
 
         // Terminal setup
@@ -465,6 +472,7 @@ impl Default for App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            ws_url: String::new(),
         }
     }
 }
