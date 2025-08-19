@@ -12,6 +12,7 @@ socktop is a remote system monitor with a rich TUI, inspired by top/btop, talkin
 ## Features
 
 - Remote monitoring via WebSocket (JSON over WS)
+- Optional WSS (TLS): agent auto‑generates a self‑signed cert on first run; client pins the cert via --tls-ca/-t 
 - TUI built with ratatui
 - CPU
   - Overall sparkline + per-core mini bars
@@ -67,7 +68,7 @@ Two components:
 
 1) Agent (remote): small Rust WS server using sysinfo + /proc. It collects on demand when the client asks (fast metrics ~500 ms, processes ~2 s, disks ~5 s). No background loop when nobody is connected.
 
-2) Client (local): TUI that connects to ws://HOST:PORT/ws and renders updates.
+2) Client (local): TUI that connects to ws://HOST:PORT/ws (or wss://HOST:PORT/ws when TLS is enabled) and renders updates.
 
 ---
 
@@ -94,6 +95,30 @@ cargo build --release
 ```
 
 Tip: Add ?token=... if you enable auth (see Security).
+
+TLS quick start (optional, recommended on untrusted networks):
+
+- Start the agent with TLS enabled (default TLS port 8443). On first run it will generate a self‑signed certificate and key under your config directory.
+
+```bash
+./target/release/socktop_agent --enableSSL --port 8443   # or: -p 8443
+# First run prints the cert and key paths, e.g.:
+# socktop_agent: generated self-signed TLS certificate at /home/you/.config/socktop_agent/tls/cert.pem
+# socktop_agent: private key at /home/you/.config/socktop_agent/tls/key.pem
+```
+
+- Copy the certificate file to the client machine (keep the key private on the server):
+
+```bash
+scp /home/you/.config/socktop_agent/tls/cert.pem you@client:/tmp/socktop-agent-ca.pem
+```
+
+- Connect with the TUI, pinning the server cert:
+
+```bash
+./target/release/socktop --tls-ca /tmp/socktop-agent-ca.pem wss://REMOTE_HOST:8443/ws
+# Note: if you pass --tls-ca but use ws://, the client auto-upgrades to wss://
+```
 
 ---
 
@@ -135,6 +160,8 @@ Agent (server):
 socktop_agent --port 3000
 # or env: SOCKTOP_PORT=3000 socktop_agent
 # optional auth: SOCKTOP_TOKEN=changeme socktop_agent
+# enable TLS (self‑signed cert, default port 8443; you can also use -p):
+socktop_agent --enableSSL --port 8443
 ```
 
 Client (TUI):
@@ -143,6 +170,11 @@ Client (TUI):
 socktop ws://HOST:3000/ws
 # with token:
 socktop "ws://HOST:3000/ws?token=changeme"
+# TLS with pinned server certificate (recommended over the internet):
+socktop --tls-ca /path/to/cert.pem wss://HOST:8443/ws
+# shorthand:
+socktop -t /path/to/cert.pem wss://HOST:8443/ws
+# Note: providing --tls-ca/-t automatically upgrades ws:// to wss:// if you forget
 ```
 
 Intervals (client-driven):
@@ -188,6 +220,13 @@ Tip: If only the binary changed, restart is enough. If the unit file changed, ru
   - Flag: --port 8080 or -p 8080
   - Positional: socktop_agent 8080
   - Env: SOCKTOP_PORT=8080
+- TLS (self‑signed):
+  - Enable: --enableSSL
+  - Default TLS port: 8443 (override with --port/-p)
+  - Certificate/Key location (created on first TLS run):
+    - Linux (XDG): $XDG_CONFIG_HOME/socktop_agent/tls/{cert.pem,key.pem} (defaults to ~/.config)
+    - The agent prints these paths on creation.
+  - You can set XDG_CONFIG_HOME before first run to control where certs are written.
 - Auth token (optional): SOCKTOP_TOKEN=changeme
 - Disable GPU metrics: SOCKTOP_AGENT_GPU=0
 - Disable CPU temperature: SOCKTOP_AGENT_TEMP=0
@@ -249,6 +288,27 @@ Client:
 ```bash
 socktop "ws://HOST:3000/ws?token=changeme"
 ```
+
+### TLS / WSS
+
+For encrypted connections, enable TLS on the agent and pin the server certificate on the client.
+
+Server (generates self‑signed cert and key on first run):
+
+```bash
+socktop_agent --enableSSL --port 8443
+```
+
+Client (trust/pin the server cert; copy cert.pem from the agent):
+
+```bash
+socktop --tls-ca /path/to/agent/cert.pem wss://HOST:8443/ws
+```
+
+Notes:
+- Do not copy the private key off the server; only the cert.pem is needed by clients.
+- When --tls-ca/-t is supplied, the client auto‑upgrades ws:// to wss:// to avoid protocol mismatch.
+- You can run multiple clients with different cert paths by passing --tls-ca per invocation.
 
 ---
 
@@ -319,7 +379,8 @@ Tips:
 cargo fmt
 cargo clippy --all-targets --all-features
 cargo run -p socktop -- ws://127.0.0.1:3000/ws
-cargo run -p socktop_agent -- --port 3000
+# TLS (dev): first run will create certs under ~/.config/socktop_agent/tls/
+cargo run -p socktop_agent -- --enableSSL --port 8443
 ```
 
 ---
@@ -331,7 +392,7 @@ cargo run -p socktop_agent -- --port 3000
 - [x] Sort top processes in the TUI
 - [ ] Configurable refresh intervals (client)
 - [ ] Export metrics to file
-- [ ] TLS / WSS support
+- [x] TLS / WSS support (self‑signed server cert + client pinning)
 - [x] Split processes/disks to separate WS calls with independent cadences (already logical on client; formalize API)
 
 ---

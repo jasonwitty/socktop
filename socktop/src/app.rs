@@ -98,10 +98,15 @@ impl App {
         }
     }
 
-    pub async fn run(&mut self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(
+        &mut self,
+        url: &str,
+        tls_ca: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Connect to agent
+        //let mut ws = connect(url, tls_ca).await?;
         self.ws_url = url.to_string();
-        let mut ws = connect(url).await?;
+        let mut ws = connect(url, tls_ca).await?;
 
         // Terminal setup
         enable_raw_mode()?;
@@ -249,10 +254,7 @@ impl App {
                 break;
             }
 
-            // Draw current frame first so the UI never feels blocked
-            terminal.draw(|f| self.draw(f))?;
-
-            // Then fetch and update
+            // Fetch and update
             if let Some(m) = request_metrics(ws).await {
                 self.update_with_metrics(m);
 
@@ -276,12 +278,10 @@ impl App {
                     }
                     self.last_disks_poll = Instant::now();
                 }
-            } else {
-                // If we couldn't get metrics, try to reconnect once
-                if let Ok(new_ws) = connect(&self.ws_url).await {
-                    *ws = new_ws;
-                }
             }
+
+            // Draw
+            terminal.draw(|f| self.draw(f))?;
 
             // Tick rate
             sleep(Duration::from_millis(500)).await;

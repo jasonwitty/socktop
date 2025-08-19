@@ -13,7 +13,7 @@ futures-util = "0.3"
 anyhow = "1.0"
 
 # websocket
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["__rustls-tls", "connect"] }
 tungstenite = "0.24"
 url = "2.5"
 
