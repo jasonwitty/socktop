@@ -103,7 +103,6 @@ impl App {
         url: &str,
         tls_ca: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        
         // Connect to agent
         //let mut ws = connect(url, tls_ca).await?;
         self.ws_url = url.to_string();
