@@ -4,11 +4,10 @@ use flate2::bufread::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pemfile::Item;
-use std::io::{Cursor, Read};
-use std::sync::OnceLock;
+use std::io::{Read};
 use std::{fs::File, io::BufReader, sync::Arc};
 use tokio::net::TcpStream;
-use tokio::time::{interval, timeout, Duration};
+use tokio::time::{interval, Duration};
 use tokio_tungstenite::{
     connect_async, connect_async_tls_with_config, tungstenite::client::IntoClientRequest,
     tungstenite::Message, Connector, MaybeTlsStream, WebSocketStream,
@@ -57,15 +56,6 @@ async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn s
     Ok(ws)
 }
 
-#[inline]
-fn debug_on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("SOCKTOP_DEBUG")
-            .map(|v| v != "0")
-            .unwrap_or(false)
-    })
-}
 
 // Send a "get_metrics" request and await a single JSON reply
 pub async fn request_metrics(ws: &mut WsStream) -> Option<Metrics> {

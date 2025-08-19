@@ -15,7 +15,11 @@ async fn probe_ws_endpoints() {
         }
     };
 
-    let mut ws = connect(&url).await.expect("connect ws");
+    // Optional pinned CA for WSS/self-signed setups
+    let tls_ca = std::env::var("SOCKTOP_TLS_CA").ok();
+    let mut ws = connect(&url, tls_ca.as_deref())
+        .await
+        .expect("connect ws");
 
     // Should get fast metrics quickly
     let m = request_metrics(&mut ws).await;
