@@ -33,15 +33,12 @@ jobs:
           RUST_LOG=info SOCKTOP_ENABLE_SSL=0 ./target/release/socktop_agent -p 3000 > agent.log 2>&1 &
           AGENT_PID=$!
           echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
-          # Wait for port 3000 to accept connections (30s max)
+          # Wait for /healthz to return 200 (60s max)
           for i in {1..60}; do
-            if bash -lc "</dev/tcp/127.0.0.1/3000" &>/dev/null; then
-              echo "agent is ready"
-              break
-            fi
-            sleep 0.5
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then echo "agent is ready"; break; fi
+            sleep 1
           done
-          if ! bash -lc "</dev/tcp/127.0.0.1/3000" &>/dev/null; then
+          if ! curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then
             echo "--- agent.log (tail) ---"
             tail -n 200 agent.log || true
             echo "--- lsof/netstat ---"
@@ -73,9 +70,12 @@ jobs:
           $p = Start-Process -FilePath "${PWD}\\target\\release\\socktop_agent.exe" -ArgumentList "-p 3000" -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow
           echo "AGENT_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
           $ready = $false
-          for ($i = 0; $i -lt 120; $i++) {
-            if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3000 -InformationLevel Quiet) { $ready = $true; break }
-            Start-Sleep -Milliseconds 500
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/healthz" -TimeoutSec 2 -ErrorAction Stop
+              if ($resp.StatusCode -eq 200) { $ready = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 1
           }
           if (-not $ready) {
             Write-Warning "TCP connect to (127.0.0.1 : 3000) failed"

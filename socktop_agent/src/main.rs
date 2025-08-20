@@ -9,7 +9,7 @@ mod state;
 mod types;
 mod ws;
 
-use axum::{routing::get, Router};
+use axum::{http::StatusCode, routing::get, Router};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
@@ -48,8 +48,10 @@ async fn main() -> anyhow::Result<()> {
     let _h_disks = spawn_disks_sampler(state.clone(), std::time::Duration::from_secs(5));
 
     // Web app: route /ws to the websocket handler
+    async fn healthz() -> StatusCode { StatusCode::OK }
     let app = Router::new()
         .route("/ws", get(ws::ws_handler))
+        .route("/healthz", get(healthz))
         .with_state(state.clone());
 
     let enable_ssl =
