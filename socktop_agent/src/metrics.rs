@@ -344,7 +344,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 
     let total_count = sys.processes().len();
 
-    let mut procs: Vec<ProcessInfo> = sys
+    let procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
         .map(|p| ProcessInfo {
