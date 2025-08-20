@@ -23,40 +23,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build (release)
         run: cargo build --release --workspace
-      - name: Start agent (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Start the already-built release binary to avoid rebuild delays
-          # Force TLS off for this probe and disable slow/fragile sensors
-          RUST_LOG=info SOCKTOP_ENABLE_SSL=0 SOCKTOP_AGENT_GPU=0 SOCKTOP_AGENT_TEMP=0 ./target/release/socktop_agent -p 3000 > agent.log 2>&1 &
-          AGENT_PID=$!
-          echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
-          echo "SOCKTOP_PORT=3000" >> $GITHUB_ENV
-          echo "SOCKTOP_WS=ws://127.0.0.1:3000/ws" >> $GITHUB_ENV
-          # Wait for /healthz to return 200 (60s max)
-          for i in {1..60}; do
-            if curl -fsS "http://127.0.0.1:3000/healthz" >/dev/null; then echo "agent is ready on 3000"; break; fi
-            sleep 1
-          done
-          if ! curl -fsS "http://127.0.0.1:3000/healthz" >/dev/null; then
-            echo "--- agent.log (tail) ---"; tail -n 200 agent.log || true; exit 1
-          fi
-      - name: Run WS probe test (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # quick preflight
-          curl -fsS "http://127.0.0.1:${SOCKTOP_PORT}/healthz" >/dev/null
-          cargo test -p socktop --test ws_probe -- --nocapture
-      - name: Stop agent (Ubuntu)
-        if: always() && matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          if [ -n "${AGENT_PID:-}" ]; then kill $AGENT_PID || true; fi
-      - name: Start agent (Windows)
+      - name: Windows: start agent and run WS probe
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
@@ -68,9 +35,34 @@ jobs:
           $out = Join-Path $PWD "agent.out.txt"
           $err = Join-Path $PWD "agent.err.txt"
           $p = Start-Process -FilePath "${PWD}\target\release\socktop_agent.exe" -ArgumentList "-p 3000" -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow
-          echo "AGENT_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
           $ready = $false
-          echo "SOCKTOP_PORT=3000" | Out-File -FilePath $env:GITHUB_ENV -Append
+          for ($i = 0; $i -lt 60; $i++) {
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = "curl.exe"
+            $pinfo.Arguments = "-fsS http://127.0.0.1:3000/healthz"
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.UseShellExecute = $false
+            $proc = [System.Diagnostics.Process]::Start($pinfo)
+            $proc.WaitForExit()
+            if ($proc.ExitCode -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $ready) {
+            Write-Warning "TCP connect to (127.0.0.1 : 3000) failed"
+            if (Test-Path $out) { Write-Host "--- agent.out (full) ---"; Get-Content $out }
+            if (Test-Path $err) { Write-Host "--- agent.err (full) ---"; Get-Content $err }
+            Write-Host "--- netstat ---"
+            netstat -ano | Select-String ":3000" | ForEach-Object { $_.Line }
+            Write-Error "agent did not become ready"
+          }
+          # Run the test in the same step/session so the agent stays alive
+          $env:SOCKTOP_WS = "ws://127.0.0.1:3000/ws"
+          try {
+            cargo test -p socktop --test ws_probe -- --nocapture
+          } finally {
+            if ($p -and !$p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          }
           echo "SOCKTOP_WS=ws://127.0.0.1:3000/ws" | Out-File -FilePath $env:GITHUB_ENV -Append
           for ($i = 0; $i -lt 60; $i++) {
             try {
@@ -87,25 +79,7 @@ jobs:
             netstat -ano | Select-String ":3000" | ForEach-Object { $_.Line }
             Write-Error "agent did not become ready"
           }
-      - name: Run WS probe test (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $env:SOCKTOP_WS = "ws://127.0.0.1:3000/ws"
-          # preflight
-          try {
-            $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/healthz" -TimeoutSec 5 -ErrorAction Stop
-          } catch {
-            Write-Host "--- agent.out (full) ---"; if (Test-Path agent.out.txt) { Get-Content agent.out.txt }
-            Write-Host "--- agent.err (full) ---"; if (Test-Path agent.err.txt) { Get-Content agent.err.txt }
-            throw "agent not healthy before test"
-          }
-          cargo test -p socktop --test ws_probe -- --nocapture
-      - name: Stop agent (Windows)
-        if: always() && matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          if ($env:AGENT_PID) { Stop-Process -Id $env:AGENT_PID -Force -ErrorAction SilentlyContinue }
+      
       - name: Smoke test (client --help)
         run: cargo run -p socktop -- --help
       - name: Package artifacts
