@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Web app: route /ws to the websocket handler
     async fn healthz() -> StatusCode {
+        println!("/healthz request");
         StatusCode::OK
     }
     let app = Router::new()

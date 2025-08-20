@@ -81,8 +81,8 @@ jobs:
           }
           if (-not $ready) {
             Write-Warning "TCP connect to (127.0.0.1 : 3000) failed"
-            if (Test-Path $out) { Write-Host "--- agent.out (tail) ---"; Get-Content $out -Tail 200 }
-            if (Test-Path $err) { Write-Host "--- agent.err (tail) ---"; Get-Content $err -Tail 200 }
+            if (Test-Path $out) { Write-Host "--- agent.out (full) ---"; Get-Content $out }
+            if (Test-Path $err) { Write-Host "--- agent.err (full) ---"; Get-Content $err }
             Write-Host "--- netstat ---"
             netstat -ano | Select-String ":3000" | ForEach-Object { $_.Line }
             Write-Error "agent did not become ready"
@@ -96,8 +96,8 @@ jobs:
           try {
             $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/healthz" -TimeoutSec 5 -ErrorAction Stop
           } catch {
-            Write-Host "--- agent.out (tail) ---"; if (Test-Path agent.out.txt) { Get-Content agent.out.txt -Tail 200 }
-            Write-Host "--- agent.err (tail) ---"; if (Test-Path agent.err.txt) { Get-Content agent.err.txt -Tail 200 }
+            Write-Host "--- agent.out (full) ---"; if (Test-Path agent.out.txt) { Get-Content agent.out.txt }
+            Write-Host "--- agent.err (full) ---"; if (Test-Path agent.err.txt) { Get-Content agent.err.txt }
             throw "agent not healthy before test"
           }
           cargo test -p socktop --test ws_probe -- --nocapture
