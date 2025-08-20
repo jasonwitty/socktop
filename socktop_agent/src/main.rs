@@ -3,6 +3,7 @@
 
 mod gpu;
 mod metrics;
+mod proto;
 mod sampler;
 mod state;
 mod types;

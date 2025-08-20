@@ -1,0 +1,15 @@
+syntax = "proto3";
+package socktop;
+
+// All running processes. Sorting is done client-side.
+message Processes {
+  uint64 process_count = 1;           // total processes in the system
+  repeated Process rows = 2;          // all processes
+}
+
+message Process {
+  uint32 pid = 1;
+  string name = 2;
+  float cpu_usage = 3;                // 0..100
+  uint64 mem_bytes = 4;               // RSS bytes
+}
