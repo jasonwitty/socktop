@@ -241,7 +241,7 @@ Select profile:
 Enter number (or blank to abort): 2
 ```
 
-Choosing a number starts the TUI with that profile. Pressing Enter on blank aborts without connecting.
+Choosing a number starts the TUI with that profile. A built‑in `demo` option is always appended; selecting it launches a local agent on port 3231 (no TLS) and connects to `ws://127.0.0.1:3231/ws`. Pressing Enter on blank aborts without connecting.
 
 ### JSON format
 

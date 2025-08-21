@@ -17,6 +17,7 @@ struct ParsedArgs {
     tls_ca: Option<String>,
     profile: Option<String>,
     save: bool,
+    demo: bool,
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
@@ -25,13 +26,14 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
     let mut url: Option<String> = None;
     let mut tls_ca: Option<String> = None;
     let mut profile: Option<String> = None;
-    let mut save = false; // --save-profile
+    let mut save = false; // --save
+    let mut demo = false; // --demo
 
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 return Err(format!(
-                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [ws://HOST:PORT/ws]" 
+                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]" 
                 ));
             }
             "--tls-ca" | "-t" => {
@@ -42,6 +44,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
             }
             "--save" => {
                 save = true;
+            }
+            "--demo" => {
+                demo = true;
             }
             _ if arg.starts_with("--tls-ca=") => {
                 if let Some((_, v)) = arg.split_once('=') {
@@ -62,7 +67,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
                     url = Some(arg);
                 } else {
                     return Err(format!(
-                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [ws://HOST:PORT/ws]"
+                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"
                     ));
                 }
             }
@@ -73,6 +78,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
         tls_ca,
         profile,
         save,
+        demo,
     })
 }
 
@@ -86,6 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
+
+    // Demo mode short-circuit (ignore other args except conflicting ones)
+    if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
+        return run_demo_mode(parsed.tls_ca.as_deref()).await;
+    }
 
     let profiles_file = load_profiles();
     let req = ProfileRequest {
@@ -141,7 +152,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (u, t)
         }
         ResolveProfile::Loaded(u, t) => (u, t),
-        ResolveProfile::PromptSelect(names) => {
+        ResolveProfile::PromptSelect(mut names) => {
+            // Always add demo option to list
+            if !names.iter().any(|n| n == "demo") { names.push("demo".into()); }
             eprintln!("Select profile:");
             for (i, n) in names.iter().enumerate() {
                 eprintln!("  {}. {}", i + 1, n);
@@ -153,6 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(idx) = line.trim().parse::<usize>() {
                     if idx >= 1 && idx <= names.len() {
                         let name = &names[idx - 1];
+                        if name == "demo" { return run_demo_mode(parsed.tls_ca.as_deref()).await; }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
                             (entry.url.clone(), entry.tls_ca.clone())
                         } else {
@@ -217,4 +231,54 @@ fn prompt_string(prompt: &str) -> io::Result<String> {
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
     Ok(line)
+}
+
+// --- Demo Mode ---
+
+async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let port = 3231;
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let child = spawn_demo_agent(port)?;
+    // Use select to handle Ctrl-C and normal quit
+    let mut app = App::new();
+    tokio::select! {
+        res = app.run(&url, None) => { drop(child); res }
+        _ = tokio::signal::ctrl_c() => {
+            // Drop child (kills agent) then return
+            drop(child);
+            Ok(())
+        }
+    }
+}
+
+struct DemoGuard(std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>);
+impl Drop for DemoGuard { fn drop(&mut self) { if let Some(mut ch) = self.0.lock().unwrap().take() { let _ = ch.kill(); } } }
+
+fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> {
+    let candidate = find_agent_executable();
+    let mut cmd = std::process::Command::new(candidate);
+    cmd.arg("--port").arg(port.to_string());
+    cmd.env("SOCKTOP_ENABLE_SSL", "0");
+    cmd.env("SOCKTOP_AGENT_GPU", "0");
+    cmd.env("SOCKTOP_AGENT_TEMP", "0");
+    let child = cmd.spawn()?;
+    // Give the agent a brief moment to start
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    Ok(DemoGuard(std::sync::Arc::new(std::sync::Mutex::new(Some(child)))))
+}
+
+fn find_agent_executable() -> std::path::PathBuf {
+    let self_exe = std::env::current_exe().ok();
+    if let Some(exe) = self_exe {
+        if let Some(parent) = exe.parent() {
+            #[cfg(windows)]
+            let name = "socktop_agent.exe";
+            #[cfg(not(windows))]
+            let name = "socktop_agent";
+            let candidate = parent.join(name);
+            if candidate.exists() { return candidate; }
+        }
+    }
+    // Fallback to relying on PATH
+    std::path::PathBuf::from("socktop_agent")
 }
