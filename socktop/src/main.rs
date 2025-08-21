@@ -117,27 +117,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(entry) => {
                         let changed = entry.url != u || entry.tls_ca != t;
                         if changed {
-                            if parsed.save {
-                                profiles_mut.profiles.insert(
-                                    name.clone(),
-                                    ProfileEntry {
-                                        url: u.clone(),
-                                        tls_ca: t.clone(),
-                                    },
-                                );
+                            let overwrite = if parsed.save {
+                                true
+                            } else {
+                                prompt_yes_no(&format!(
+                                    "Overwrite existing profile '{name}'? [y/N]: "
+                                ))
+                            };
+                            if overwrite {
+                                profiles_mut.profiles.insert(name.clone(), ProfileEntry { url: u.clone(), tls_ca: t.clone() });
                                 let _ = save_profiles(&profiles_mut);
-                            } else if prompt_yes_no(&format!(
-                                "Overwrite existing profile '{name}'? [y/N]: "
-                            )) {
-                                profiles_mut.profiles.insert(
-                                    name.clone(),
-                                    ProfileEntry {
-                                        url: u.clone(),
-                                        tls_ca: t.clone(),
-                                    },
-                                );
-                                let _ = save_profiles(&profiles_mut);
-                            } // else: do not overwrite, just connect with provided details
+                            }
                         }
                     }
                 }
@@ -175,10 +165,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ResolveProfile::PromptCreate(name) => {
             eprintln!("Profile '{name}' does not exist yet.");
             let url = prompt_string("Enter URL (ws://HOST:PORT/ws or wss://...): ")?;
-            if url.trim().is_empty() { return Ok(()); }
+            if url.trim().is_empty() {
+                return Ok(());
+            }
             let ca = prompt_string("Enter TLS CA path (or leave blank): ")?;
-            let ca_opt = if ca.trim().is_empty() { None } else { Some(ca.trim().to_string()) };
-            profiles_mut.profiles.insert(name.clone(), ProfileEntry { url: url.trim().to_string(), tls_ca: ca_opt.clone() });
+            let ca_opt = if ca.trim().is_empty() {
+                None
+            } else {
+                Some(ca.trim().to_string())
+            };
+            profiles_mut.profiles.insert(
+                name.clone(),
+                ProfileEntry {
+                    url: url.trim().to_string(),
+                    tls_ca: ca_opt.clone(),
+                },
+            );
             let _ = save_profiles(&profiles_mut);
             (url.trim().to_string(), ca_opt)
         }
