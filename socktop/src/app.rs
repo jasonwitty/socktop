@@ -101,8 +101,12 @@ impl App {
     }
 
     pub fn with_intervals(mut self, metrics_ms: Option<u64>, procs_ms: Option<u64>) -> Self {
-        if let Some(m) = metrics_ms { self.metrics_interval = Duration::from_millis(m.max(100)); }
-        if let Some(p) = procs_ms { self.procs_interval = Duration::from_millis(p.max(200)); }
+        if let Some(m) = metrics_ms {
+            self.metrics_interval = Duration::from_millis(m.max(100));
+        }
+        if let Some(p) = procs_ms {
+            self.procs_interval = Duration::from_millis(p.max(200));
+        }
         self
     }
 
