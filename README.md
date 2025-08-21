@@ -94,31 +94,18 @@ cargo build --release
 ./target/release/socktop ws://REMOTE_HOST:3000/ws
 ```
 
-Tip: Add ?token=... if you enable auth (see Security).
+### Quick demo (no agent setup)
 
-TLS quick start (optional, recommended on untrusted networks):
-
-- Start the agent with TLS enabled (default TLS port 8443). On first run it will generate a self‑signed certificate and key under your config directory.
+Spin up a temporary local agent on port 3231 and connect automatically:
 
 ```bash
-./target/release/socktop_agent --enableSSL --port 8443   # or: -p 8443
-# First run prints the cert and key paths, e.g.:
-# socktop_agent: generated self-signed TLS certificate at /home/you/.config/socktop_agent/tls/cert.pem
-# socktop_agent: private key at /home/you/.config/socktop_agent/tls/key.pem
+socktop --demo
 ```
 
-- Copy the certificate file to the client machine (keep the key private on the server):
+Or just run `socktop` with no arguments and pick the built‑in `demo` entry from the interactive profile list (if you have saved profiles, `demo` is appended). The demo agent:
 
-```bash
-scp /home/you/.config/socktop_agent/tls/cert.pem you@client:/tmp/socktop-agent-ca.pem
-```
-
-- Connect with the TUI, pinning the server cert:
-
-```bash
-./target/release/socktop --tls-ca /tmp/socktop-agent-ca.pem wss://REMOTE_HOST:8443/ws
-# Note: if you pass --tls-ca but use ws://, the client auto-upgrades to wss://
-```
+- Runs locally (`ws://127.0.0.1:3231/ws`)
+- Stops automatically (you'll see "Stopped demo agent on port 3231") when you quit the TUI or press Ctrl-C
 
 ---
 
@@ -183,6 +170,84 @@ Intervals (client-driven):
 - Disks: ~5 s
 
 The agent stays idle unless queried. When queried, it collects just what’s needed.
+
+---
+
+## Connection Profiles (Named)
+
+You can save frequently used connection settings (URL + optional TLS CA path) under a short name and reuse them later.
+
+Config file location:
+
+- Linux (XDG): `$XDG_CONFIG_HOME/socktop/profiles.json`
+- Fallback (when XDG not set): `~/.config/socktop/profiles.json`
+
+### Creating a profile
+
+First time you specify a new `--profile/-P` name together with a URL (and optional `--tls-ca`), it is saved automatically:
+
+```bash
+socktop --profile prod ws://prod-host:3000/ws
+# With TLS pinning:
+socktop --profile prod-tls --tls-ca /path/to/cert.pem wss://prod-host:8443/ws
+```
+
+If a profile already exists you will be prompted before overwriting:
+
+```
+$ socktop --profile prod ws://new-host:3000/ws
+Overwrite existing profile 'prod'? [y/N]: y
+```
+
+To overwrite without an interactive prompt pass `--save`:
+
+```bash
+socktop --profile prod --save ws://new-host:3000/ws
+```
+
+### Using a saved profile
+
+Just pass the profile name (no URL needed):
+
+```bash
+socktop --profile prod
+socktop -P prod-tls      # short flag
+```
+
+The stored URL (and TLS CA path, if any) will be used. TLS auto-upgrade still applies if a CA path is stored alongside a ws:// URL.
+
+### Interactive selection (no args)
+
+If you run `socktop` with no arguments and at least one profile exists, you will be shown a numbered list to pick from:
+
+```
+$ socktop
+Select profile:
+  1. prod
+  2. prod-tls
+Enter number (or blank to abort): 2
+```
+
+Choosing a number starts the TUI with that profile. A built‑in `demo` option is always appended; selecting it launches a local agent on port 3231 (no TLS) and connects to `ws://127.0.0.1:3231/ws`. Pressing Enter on blank aborts without connecting.
+
+### JSON format
+
+An example `profiles.json` (pretty‑printed):
+
+```json
+{
+  "profiles": {
+    "prod": { "url": "ws://prod-host:3000/ws" },
+    "prod-tls": { "url": "wss://prod-host:8443/ws", "tls_ca": "/home/user/certs/prod-cert.pem" }
+  },
+  "version": 0
+}
+```
+
+Notes:
+- The `tls_ca` path is stored as given; if you move or rotate the certificate update the profile by re-running with `--profile NAME --save`.
+- Deleting a profile: edit the JSON file and remove the entry (TUI does not yet have an in-app delete command).
+- Profiles are client-side convenience only; they do not affect the agent.
 
 ---
 
