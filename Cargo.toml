@@ -39,6 +39,7 @@ axum = { version = "0.7", features = ["ws"] }
 prost = "0.13"
 prost-types = "0.13"
 bytes = "1"
+dirs-next = "2"
 
 [profile.release]
 # Favor smaller, simpler binaries with good runtime perf
