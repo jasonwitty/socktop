@@ -190,6 +190,12 @@ First time you specify a new `--profile/-P` name together with a URL (and option
 socktop --profile prod ws://prod-host:3000/ws
 # With TLS pinning:
 socktop --profile prod-tls --tls-ca /path/to/cert.pem wss://prod-host:8443/ws
+
+You can also set custom intervals (milliseconds):
+
+```bash
+socktop --profile prod --metrics-interval-ms 750 --processes-interval-ms 3000 ws://prod-host:3000/ws
+```
 ```
 
 If a profile already exists you will be prompted before overwriting:
@@ -214,7 +220,7 @@ socktop --profile prod
 socktop -P prod-tls      # short flag
 ```
 
-The stored URL (and TLS CA path, if any) will be used. TLS auto-upgrade still applies if a CA path is stored alongside a ws:// URL.
+The stored URL (and TLS CA path, if any) plus any saved intervals will be used. TLS auto-upgrade still applies if a CA path is stored alongside a ws:// URL.
 
 ### Interactive selection (no args)
 
@@ -238,7 +244,12 @@ An example `profiles.json` (pretty‑printed):
 {
   "profiles": {
     "prod": { "url": "ws://prod-host:3000/ws" },
-    "prod-tls": { "url": "wss://prod-host:8443/ws", "tls_ca": "/home/user/certs/prod-cert.pem" }
+    "prod-tls": {
+      "url": "wss://prod-host:8443/ws",
+      "tls_ca": "/home/user/certs/prod-cert.pem",
+      "metrics_interval_ms": 500,
+      "processes_interval_ms": 2000
+    }
   },
   "version": 0
 }
@@ -248,6 +259,7 @@ Notes:
 - The `tls_ca` path is stored as given; if you move or rotate the certificate update the profile by re-running with `--profile NAME --save`.
 - Deleting a profile: edit the JSON file and remove the entry (TUI does not yet have an in-app delete command).
 - Profiles are client-side convenience only; they do not affect the agent.
+- Intervals: `metrics_interval_ms` controls the fast metrics poll (default 500 ms). `processes_interval_ms` controls process list polling (default 2000 ms). Values below 100 ms (metrics) or 200 ms (processes) are clamped.
 
 ---
 

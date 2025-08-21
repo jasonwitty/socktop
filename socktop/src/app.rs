@@ -63,6 +63,7 @@ pub struct App {
     last_disks_poll: Instant,
     procs_interval: Duration,
     disks_interval: Duration,
+    metrics_interval: Duration,
 
     // For reconnects
     ws_url: String,
@@ -94,8 +95,15 @@ impl App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            metrics_interval: Duration::from_millis(500),
             ws_url: String::new(),
         }
+    }
+
+    pub fn with_intervals(mut self, metrics_ms: Option<u64>, procs_ms: Option<u64>) -> Self {
+        if let Some(m) = metrics_ms { self.metrics_interval = Duration::from_millis(m.max(100)); }
+        if let Some(p) = procs_ms { self.procs_interval = Duration::from_millis(p.max(200)); }
+        self
     }
 
     pub async fn run(
@@ -284,7 +292,7 @@ impl App {
             terminal.draw(|f| self.draw(f))?;
 
             // Tick rate
-            sleep(Duration::from_millis(500)).await;
+            sleep(self.metrics_interval).await;
         }
 
         Ok(())
@@ -471,6 +479,7 @@ impl Default for App {
                 .unwrap_or_else(Instant::now),
             procs_interval: Duration::from_secs(2),
             disks_interval: Duration::from_secs(5),
+            metrics_interval: Duration::from_millis(500),
             ws_url: String::new(),
         }
     }

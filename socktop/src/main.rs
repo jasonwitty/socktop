@@ -19,6 +19,8 @@ pub(crate) struct ParsedArgs {
     save: bool,
     demo: bool,
     dry_run: bool, // hidden test helper: skip connecting
+    metrics_interval_ms: Option<u64>,
+    processes_interval_ms: Option<u64>,
 }
 
 pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
@@ -30,10 +32,12 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
     let mut save = false;
     let mut demo = false;
     let mut dry_run = false;
+    let mut metrics_interval_ms: Option<u64> = None;
+    let mut processes_interval_ms: Option<u64> = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]\n"));
+                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"));
             }
             "--tls-ca" | "-t" => {
                 tls_ca = it.next();
@@ -51,6 +55,8 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                 // intentionally undocumented
                 dry_run = true;
             }
+            "--metrics-interval-ms" => { metrics_interval_ms = it.next().and_then(|v| v.parse().ok()); }
+            "--processes-interval-ms" => { processes_interval_ms = it.next().and_then(|v| v.parse().ok()); }
             _ if arg.starts_with("--tls-ca=") => {
                 if let Some((_, v)) = arg.split_once('=') {
                     if !v.is_empty() {
@@ -65,6 +71,8 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                     }
                 }
             }
+            _ if arg.starts_with("--metrics-interval-ms=") => { if let Some((_,v))=arg.split_once('='){ metrics_interval_ms = v.parse().ok(); } }
+            _ if arg.starts_with("--processes-interval-ms=") => { if let Some((_,v))=arg.split_once('='){ processes_interval_ms = v.parse().ok(); } }
             _ => {
                 if url.is_none() {
                     url = Some(arg);
@@ -81,6 +89,8 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
         save,
         demo,
         dry_run,
+    metrics_interval_ms,
+    processes_interval_ms,
     })
 }
 
@@ -104,20 +114,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let resolved = req.resolve(&profiles_file);
     let mut profiles_mut = profiles_file.clone();
-    let (url, tls_ca): (String, Option<String>) = match resolved {
+    let (url, tls_ca, metrics_interval_ms, processes_interval_ms): (String, Option<String>, Option<u64>, Option<u64>) = match resolved {
         ResolveProfile::Direct(u, t) => {
             if let Some(name) = parsed.profile.as_ref() {
                 let existing = profiles_mut.profiles.get(name);
                 match existing {
                     None => {
+                        let (mi, pi) = gather_intervals(parsed.metrics_interval_ms, parsed.processes_interval_ms)?;
                         profiles_mut.profiles.insert(
                             name.clone(),
                             ProfileEntry {
                                 url: u.clone(),
                                 tls_ca: t.clone(),
+                                metrics_interval_ms: mi,
+                                processes_interval_ms: pi,
                             },
                         );
                         let _ = save_profiles(&profiles_mut);
+                        (u, t, mi, pi)
                     }
                     Some(entry) => {
                         let changed = entry.url != u || entry.tls_ca != t;
@@ -130,22 +144,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ))
                             };
                             if overwrite {
+                                let (mi, pi) = gather_intervals(parsed.metrics_interval_ms, parsed.processes_interval_ms)?;
                                 profiles_mut.profiles.insert(
                                     name.clone(),
                                     ProfileEntry {
                                         url: u.clone(),
                                         tls_ca: t.clone(),
+                                        metrics_interval_ms: mi,
+                                        processes_interval_ms: pi,
                                     },
                                 );
                                 let _ = save_profiles(&profiles_mut);
+                                (u, t, mi, pi)
+                            } else {
+                                (u, t, entry.metrics_interval_ms, entry.processes_interval_ms)
                             }
-                        }
+                        } else { (u, t, entry.metrics_interval_ms, entry.processes_interval_ms) }
                     }
                 }
             }
-            (u, t)
+            else { (u, t, parsed.metrics_interval_ms, parsed.processes_interval_ms) }
         }
-        ResolveProfile::Loaded(u, t) => (u, t),
+        ResolveProfile::Loaded(u, t) => {
+            let entry = profiles_mut.profiles.get(parsed.profile.as_ref().unwrap()).unwrap();
+            (u, t, entry.metrics_interval_ms, entry.processes_interval_ms)
+        }
         ResolveProfile::PromptSelect(mut names) => {
             if !names.iter().any(|n| n == "demo") {
                 names.push("demo".into());
@@ -165,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             return run_demo_mode(parsed.tls_ca.as_deref()).await;
                         }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
-                            (entry.url.clone(), entry.tls_ca.clone())
+                            (entry.url.clone(), entry.tls_ca.clone(), entry.metrics_interval_ms, entry.processes_interval_ms)
                         } else {
                             return Ok(());
                         }
@@ -191,22 +214,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 Some(ca.trim().to_string())
             };
-            profiles_mut.profiles.insert(
+        let (mi, pi) = gather_intervals(parsed.metrics_interval_ms, parsed.processes_interval_ms)?;
+        profiles_mut.profiles.insert(
                 name.clone(),
                 ProfileEntry {
                     url: url.trim().to_string(),
                     tls_ca: ca_opt.clone(),
+            metrics_interval_ms: mi,
+            processes_interval_ms: pi,
                 },
             );
             let _ = save_profiles(&profiles_mut);
-            (url.trim().to_string(), ca_opt)
+        (url.trim().to_string(), ca_opt, mi, pi)
         }
         ResolveProfile::None => {
             eprintln!("No URL provided and no profiles to select.");
             return Ok(());
         }
     };
-    let mut app = App::new();
+    let mut app = App::new().with_intervals(metrics_interval_ms, processes_interval_ms);
     if parsed.dry_run {
         return Ok(());
     }
@@ -229,6 +255,28 @@ fn prompt_string(prompt: &str) -> io::Result<String> {
     let mut line = String::new();
     io::stdin().read_line(&mut line)?;
     Ok(line)
+}
+
+fn gather_intervals(arg_metrics: Option<u64>, arg_procs: Option<u64>) -> Result<(Option<u64>, Option<u64>), Box<dyn std::error::Error>> {
+    let default_metrics = 500u64;
+    let default_procs = 2000u64;
+    let metrics = match arg_metrics {
+        Some(v) => Some(v),
+        None => {
+            let inp = prompt_string(&format!("Metrics interval ms (default {default_metrics}, Enter for default): "))?;
+            let t = inp.trim();
+            if t.is_empty() { Some(default_metrics) } else { Some(t.parse()?) }
+        }
+    };
+    let procs = match arg_procs {
+        Some(v) => Some(v),
+        None => {
+            let inp = prompt_string(&format!("Processes interval ms (default {default_procs}, Enter for default): "))?;
+            let t = inp.trim();
+            if t.is_empty() { Some(default_procs) } else { Some(t.parse()?) }
+        }
+    };
+    Ok((metrics, procs))
 }
 
 // Demo mode implementation
