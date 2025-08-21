@@ -10,7 +10,8 @@ use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::io::Write;
 
-use crate::metrics::{collect_disks, collect_fast_metrics, collect_processes_top_k};
+use crate::metrics::{collect_disks, collect_fast_metrics, collect_processes_all};
+use crate::proto::pb;
 use crate::state::AppState;
 
 pub async fn ws_handler(
@@ -44,8 +45,39 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 let _ = send_json(&mut socket, &d).await;
             }
             Message::Text(ref text) if text == "get_processes" => {
-                let p = collect_processes_top_k(&state, 50).await;
-                let _ = send_json(&mut socket, &p).await;
+                let payload = collect_processes_all(&state).await;
+                // Map to protobuf message
+                let rows: Vec<pb::Process> = payload
+                    .top_processes
+                    .into_iter()
+                    .map(|p| pb::Process {
+                        pid: p.pid,
+                        name: p.name,
+                        cpu_usage: p.cpu_usage,
+                        mem_bytes: p.mem_bytes,
+                    })
+                    .collect();
+                let pb = pb::Processes {
+                    process_count: payload.process_count as u64,
+                    rows,
+                };
+                let mut buf = Vec::with_capacity(8 * 1024);
+                if prost::Message::encode(&pb, &mut buf).is_err() {
+                    let _ = socket.send(Message::Close(None)).await;
+                } else {
+                    // compress if large
+                    if buf.len() <= 768 {
+                        let _ = socket.send(Message::Binary(buf)).await;
+                    } else {
+                        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+                        if enc.write_all(&buf).is_ok() {
+                            let bin = enc.finish().unwrap_or(buf);
+                            let _ = socket.send(Message::Binary(bin)).await;
+                        } else {
+                            let _ = socket.send(Message::Binary(buf)).await;
+                        }
+                    }
+                }
             }
             Message::Close(_) => break,
             _ => {}

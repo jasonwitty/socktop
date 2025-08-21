@@ -21,6 +21,12 @@ anyhow = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 rustls = "0.23"
 rustls-pemfile = "2.1"
+prost = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"

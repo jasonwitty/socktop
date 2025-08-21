@@ -236,9 +236,9 @@ fn read_proc_jiffies(pid: u32) -> Option<u64> {
     Some(utime.saturating_add(stime))
 }
 
-/// Collect top processes (Linux variant): compute CPU% via /proc jiffies delta.
+/// Collect all processes (Linux): compute CPU% via /proc jiffies delta; sorting moved to client.
 #[cfg(target_os = "linux")]
-pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPayload {
+pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Fresh view to avoid lingering entries and select "no tasks" (no per-thread rows).
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -291,7 +291,7 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
             .collect();
         return ProcessesPayload {
             process_count: total_count,
-            top_processes: top_k_sorted(procs, k),
+            top_processes: procs,
         };
     }
 
@@ -317,13 +317,13 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
 
     ProcessesPayload {
         process_count: total_count,
-        top_processes: top_k_sorted(procs, k),
+        top_processes: procs,
     }
 }
 
-/// Collect top processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
+/// Collect all processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
 #[cfg(not(target_os = "linux"))]
-pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPayload {
+pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     use tokio::time::sleep;
 
     let mut sys = state.sys.lock().await;
@@ -344,7 +344,7 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
 
     let total_count = sys.processes().len();
 
-    let mut procs: Vec<ProcessInfo> = sys
+    let procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
         .map(|p| ProcessInfo {
@@ -354,8 +354,6 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
             mem_bytes: p.memory(),
         })
         .collect();
-
-    procs = top_k_sorted(procs, k);
     ProcessesPayload {
         process_count: total_count,
         top_processes: procs,
@@ -363,19 +361,4 @@ pub async fn collect_processes_top_k(state: &AppState, k: usize) -> ProcessesPay
 }
 
 // Small helper to select and sort top-k by cpu
-fn top_k_sorted(mut v: Vec<ProcessInfo>, k: usize) -> Vec<ProcessInfo> {
-    if v.len() > k {
-        v.select_nth_unstable_by(k, |a, b| {
-            b.cpu_usage
-                .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        v.truncate(k);
-    }
-    v.sort_by(|a, b| {
-        b.cpu_usage
-            .partial_cmp(&a.cpu_usage)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    v
-}
+// Client now handles sorting/pagination.

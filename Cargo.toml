@@ -34,3 +34,16 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # web server (remote-agent)
 axum = { version = "0.7", features = ["ws"] }
+
+# protobuf
+prost = "0.13"
+prost-types = "0.13"
+bytes = "1"
+
+[profile.release]
+# Favor smaller, simpler binaries with good runtime perf
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+strip = "symbols"

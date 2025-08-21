@@ -5,16 +5,16 @@ on:
 
 jobs:
   build:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libdrm-dev libdrm-amdgpu1
       - name: Cargo fmt
@@ -23,75 +23,89 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build (release)
         run: cargo build --release --workspace
-      - name: Start agent (Ubuntu)
+
+      - name: "Linux: start agent and run WS probe"
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
-          # Use debug build for faster startup in CI
-          RUST_LOG=info cargo run -p socktop_agent -- -p 3000 &
+          RUST_LOG=info SOCKTOP_ENABLE_SSL=0 SOCKTOP_AGENT_GPU=0 SOCKTOP_AGENT_TEMP=0 ./target/release/socktop_agent -p 3000 > agent.log 2>&1 &
           AGENT_PID=$!
-          echo "AGENT_PID=$AGENT_PID" >> $GITHUB_ENV
-          # Wait for port 3000 to accept connections (30s max)
           for i in {1..60}; do
-            if bash -lc "</dev/tcp/127.0.0.1/3000" &>/dev/null; then
-              echo "agent is ready"
-              break
-            fi
-            sleep 0.5
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then break; fi
+            sleep 1
           done
-      - name: Run WS probe test (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        env:
-          SOCKTOP_WS: ws://127.0.0.1:3000/ws
-        run: |
-          set -euo pipefail
-          cargo test -p socktop --test ws_probe -- --nocapture
-      - name: Stop agent (Ubuntu)
-        if: always() && matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          if [ -n "${AGENT_PID:-}" ]; then kill $AGENT_PID || true; fi
-      - name: Start agent (Windows)
+          if ! curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then
+            echo "--- agent.log (tail) ---"
+            tail -n 200 agent.log || true
+            (command -v ss >/dev/null && ss -ltnp || netstat -ltnp) || true
+            kill $AGENT_PID || true
+            exit 1
+          fi
+          SOCKTOP_WS=ws://127.0.0.1:3000/ws cargo test -p socktop --test ws_probe -- --nocapture
+          kill $AGENT_PID || true
+
+      - name: "Windows: start agent and run WS probe"
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "cargo" -ArgumentList "run -p socktop_agent -- -p 3000" -PassThru
-          echo "AGENT_PID=$($p.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:SOCKTOP_ENABLE_SSL = "0"
+          $env:SOCKTOP_AGENT_GPU = "0"
+          $env:SOCKTOP_AGENT_TEMP = "0"
+          $out = Join-Path $PWD "agent.out.txt"
+          $err = Join-Path $PWD "agent.err.txt"
+          $p = Start-Process -FilePath "${PWD}\target\release\socktop_agent.exe" -ArgumentList "-p 3000" -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -NoNewWindow
           $ready = $false
           for ($i = 0; $i -lt 60; $i++) {
-            if (Test-NetConnection -ComputerName 127.0.0.1 -Port 3000 -InformationLevel Quiet) { $ready = $true; break }
-            Start-Sleep -Milliseconds 500
+            $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+            $pinfo.FileName = "curl.exe"
+            $pinfo.Arguments = "-fsS http://127.0.0.1:3000/healthz"
+            $pinfo.RedirectStandardOutput = $true
+            $pinfo.RedirectStandardError = $true
+            $pinfo.UseShellExecute = $false
+            $proc = [System.Diagnostics.Process]::Start($pinfo)
+            $proc.WaitForExit()
+            if ($proc.ExitCode -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 1
           }
-          if (-not $ready) { Write-Error "agent did not become ready" }
-      - name: Run WS probe test (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
+          if (-not $ready) {
+            Write-Warning "TCP connect to (127.0.0.1 : 3000) failed"
+            if (Test-Path $out) { Write-Host "--- agent.out (full) ---"; Get-Content $out }
+            if (Test-Path $err) { Write-Host "--- agent.err (full) ---"; Get-Content $err }
+            Write-Host "--- netstat ---"
+            netstat -ano | Select-String ":3000" | ForEach-Object { $_.Line }
+            if ($p -and !$p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+            throw "agent did not become ready"
+          }
           $env:SOCKTOP_WS = "ws://127.0.0.1:3000/ws"
-          cargo test -p socktop --test ws_probe -- --nocapture
-      - name: Stop agent (Windows)
-        if: always() && matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          if ($env:AGENT_PID) { Stop-Process -Id $env:AGENT_PID -Force -ErrorAction SilentlyContinue }
+          try {
+            cargo test -p socktop --test ws_probe -- --nocapture
+          } finally {
+            if ($p -and !$p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          }
+
       - name: Smoke test (client --help)
         run: cargo run -p socktop -- --help
-      - name: Package artifacts
+
+      - name: Package artifacts (Linux)
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -e
-          mkdir dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/release/socktop.exe dist/
-            cp target/release/socktop_agent.exe dist/
-            7z a socktop-${{ matrix.os }}.zip dist/*
-          else
-            cp target/release/socktop dist/
-            cp target/release/socktop_agent dist/
-            tar czf socktop-${{ matrix.os }}.tar.gz -C dist .
-          fi
+          mkdir -p dist
+          cp target/release/socktop dist/
+          cp target/release/socktop_agent dist/
+          tar czf socktop-${{ matrix.os }}.tar.gz -C dist .
+
+      - name: Package artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\socktop.exe dist\
+          Copy-Item target\release\socktop_agent.exe dist\
+          Compress-Archive -Path dist\* -DestinationPath socktop-${{ matrix.os }}.zip -Force
+
       - name: Upload build artifacts (ephemeral)
         uses: actions/upload-artifact@v4
         with:
@@ -99,6 +113,7 @@ jobs:
           path: |
             *.tar.gz
             *.zip
+
       - name: Upload to rolling GitHub Release (main only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
