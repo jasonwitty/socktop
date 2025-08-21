@@ -57,6 +57,8 @@ pub enum ResolveProfile {
     Loaded(String, Option<String>),
     /// Should prompt user to select among profile names
     PromptSelect(Vec<String>),
+    /// Should prompt user to create a new profile (name)
+    PromptCreate(String),
     /// No profile could be resolved (e.g., missing arguments)
     None,
 }
@@ -75,7 +77,7 @@ impl ProfileRequest {
             if let Some(entry) = pf.profiles.get(&name) {
                 return ResolveProfile::Loaded(entry.url.clone(), entry.tls_ca.clone());
             } else {
-                return ResolveProfile::None;
+                return ResolveProfile::PromptCreate(name);
             }
         }
         // Both provided -> direct (maybe later saved by caller)

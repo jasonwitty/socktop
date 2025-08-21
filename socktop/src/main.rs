@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Determine final connection parameters (and maybe mutated profiles to persist)
     let mut profiles_mut = profiles_file.clone();
     let (url, tls_ca): (String, Option<String>) = match resolved {
-    ResolveProfile::Direct(u, t) => {
+        ResolveProfile::Direct(u, t) => {
             // Possibly save if profile specified and --save or new entry
             if let Some(name) = parsed.profile.as_ref() {
                 let existing = profiles_mut.profiles.get(name);
@@ -107,7 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // New profile: auto-save immediately
                         profiles_mut.profiles.insert(
                             name.clone(),
-                            ProfileEntry { url: u.clone(), tls_ca: t.clone() },
+                            ProfileEntry {
+                                url: u.clone(),
+                                tls_ca: t.clone(),
+                            },
                         );
                         let _ = save_profiles(&profiles_mut);
                     }
@@ -117,7 +120,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if parsed.save {
                                 profiles_mut.profiles.insert(
                                     name.clone(),
-                                    ProfileEntry { url: u.clone(), tls_ca: t.clone() },
+                                    ProfileEntry {
+                                        url: u.clone(),
+                                        tls_ca: t.clone(),
+                                    },
                                 );
                                 let _ = save_profiles(&profiles_mut);
                             } else if prompt_yes_no(&format!(
@@ -125,7 +131,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )) {
                                 profiles_mut.profiles.insert(
                                     name.clone(),
-                                    ProfileEntry { url: u.clone(), tls_ca: t.clone() },
+                                    ProfileEntry {
+                                        url: u.clone(),
+                                        tls_ca: t.clone(),
+                                    },
                                 );
                                 let _ = save_profiles(&profiles_mut);
                             } // else: do not overwrite, just connect with provided details
@@ -163,6 +172,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
         }
+        ResolveProfile::PromptCreate(name) => {
+            eprintln!("Profile '{name}' does not exist yet.");
+            let url = prompt_string("Enter URL (ws://HOST:PORT/ws or wss://...): ")?;
+            if url.trim().is_empty() { return Ok(()); }
+            let ca = prompt_string("Enter TLS CA path (or leave blank): ")?;
+            let ca_opt = if ca.trim().is_empty() { None } else { Some(ca.trim().to_string()) };
+            profiles_mut.profiles.insert(name.clone(), ProfileEntry { url: url.trim().to_string(), tls_ca: ca_opt.clone() });
+            let _ = save_profiles(&profiles_mut);
+            (url.trim().to_string(), ca_opt)
+        }
         ResolveProfile::None => {
             eprintln!("No URL provided and no profiles to select.");
             return Ok(());
@@ -182,4 +201,12 @@ fn prompt_yes_no(prompt: &str) -> bool {
     } else {
         false
     }
+}
+
+fn prompt_string(prompt: &str) -> io::Result<String> {
+    eprint!("{prompt}");
+    let _ = io::stderr().flush();
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line)
 }
