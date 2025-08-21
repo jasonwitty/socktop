@@ -17,8 +17,11 @@ fn test_help_mentions_short_and_long_flags() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-    text.contains("--tls-ca") && text.contains("-t") && text.contains("--profile") && text.contains("-P"),
-    "help text missing expected flags (--tls-ca/-t, --profile/-P)\n{text}"
+        text.contains("--tls-ca")
+            && text.contains("-t")
+            && text.contains("--profile")
+            && text.contains("-P"),
+        "help text missing expected flags (--tls-ca/-t, --profile/-P)\n{text}"
     );
 }
 
@@ -59,7 +62,10 @@ fn test_tlc_ca_arg_long_and_short_parsed() {
         .args(["--profile", "dev", "--help"])
         .output()
         .expect("run socktop");
-    assert!(out3.status.success(), "socktop --profile dev --help did not succeed");
+    assert!(
+        out3.status.success(),
+        "socktop --profile dev --help did not succeed"
+    );
     let text3 = format!(
         "{}{}",
         String::from_utf8_lossy(&out3.stdout),

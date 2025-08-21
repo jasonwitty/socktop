@@ -125,7 +125,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ))
                             };
                             if overwrite {
-                                profiles_mut.profiles.insert(name.clone(), ProfileEntry { url: u.clone(), tls_ca: t.clone() });
+                                profiles_mut.profiles.insert(
+                                    name.clone(),
+                                    ProfileEntry {
+                                        url: u.clone(),
+                                        tls_ca: t.clone(),
+                                    },
+                                );
                                 let _ = save_profiles(&profiles_mut);
                             }
                         }
