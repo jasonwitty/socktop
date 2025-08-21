@@ -12,15 +12,16 @@ use profiles::{load_profiles, save_profiles, ProfileEntry, ProfileRequest, Resol
 use std::env;
 use std::io::{self, Write};
 
-struct ParsedArgs {
+pub(crate) struct ParsedArgs {
     url: Option<String>,
     tls_ca: Option<String>,
     profile: Option<String>,
     save: bool,
     demo: bool,
+    dry_run: bool, // hidden test helper: skip connecting
 }
 
-fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
+pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
     let mut it = args.into_iter();
     let prog = it.next().unwrap_or_else(|| "socktop".into());
     let mut url: Option<String> = None;
@@ -28,10 +29,11 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
     let mut profile: Option<String> = None;
     let mut save = false;
     let mut demo = false;
+    let mut dry_run = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"));
+                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]\n"));
             }
             "--tls-ca" | "-t" => {
                 tls_ca = it.next();
@@ -44,6 +46,10 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
             }
             "--demo" => {
                 demo = true;
+            }
+            "--dry-run" => {
+                // intentionally undocumented
+                dry_run = true;
             }
             _ if arg.starts_with("--tls-ca=") => {
                 if let Some((_, v)) = arg.split_once('=') {
@@ -74,6 +80,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
         profile,
         save,
         demo,
+        dry_run,
     })
 }
 
@@ -200,6 +207,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let mut app = App::new();
+    if parsed.dry_run {
+        return Ok(());
+    }
     app.run(&url, tls_ca.as_deref()).await
 }
 
@@ -246,8 +256,11 @@ fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> 
     let mut cmd = std::process::Command::new(candidate);
     cmd.arg("--port").arg(port.to_string());
     cmd.env("SOCKTOP_ENABLE_SSL", "0");
-    cmd.env("SOCKTOP_AGENT_GPU", "0");
-    cmd.env("SOCKTOP_AGENT_TEMP", "0");
+
+    //JW: do not disable GPU and TEMP in demo mode
+    //cmd.env("SOCKTOP_AGENT_GPU", "0");
+    //cmd.env("SOCKTOP_AGENT_TEMP", "0");
+
     let child = cmd.spawn()?;
     std::thread::sleep(std::time::Duration::from_millis(300));
     Ok(DemoGuard {

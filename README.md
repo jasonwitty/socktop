@@ -94,31 +94,18 @@ cargo build --release
 ./target/release/socktop ws://REMOTE_HOST:3000/ws
 ```
 
-Tip: Add ?token=... if you enable auth (see Security).
+### Quick demo (no agent setup)
 
-TLS quick start (optional, recommended on untrusted networks):
-
-- Start the agent with TLS enabled (default TLS port 8443). On first run it will generate a self‑signed certificate and key under your config directory.
+Spin up a temporary local agent on port 3231 and connect automatically:
 
 ```bash
-./target/release/socktop_agent --enableSSL --port 8443   # or: -p 8443
-# First run prints the cert and key paths, e.g.:
-# socktop_agent: generated self-signed TLS certificate at /home/you/.config/socktop_agent/tls/cert.pem
-# socktop_agent: private key at /home/you/.config/socktop_agent/tls/key.pem
+socktop --demo
 ```
 
-- Copy the certificate file to the client machine (keep the key private on the server):
+Or just run `socktop` with no arguments and pick the built‑in `demo` entry from the interactive profile list (if you have saved profiles, `demo` is appended). The demo agent:
 
-```bash
-scp /home/you/.config/socktop_agent/tls/cert.pem you@client:/tmp/socktop-agent-ca.pem
-```
-
-- Connect with the TUI, pinning the server cert:
-
-```bash
-./target/release/socktop --tls-ca /tmp/socktop-agent-ca.pem wss://REMOTE_HOST:8443/ws
-# Note: if you pass --tls-ca but use ws://, the client auto-upgrades to wss://
-```
+- Runs locally (`ws://127.0.0.1:3231/ws`)
+- Stops automatically (you'll see "Stopped demo agent on port 3231") when you quit the TUI or press Ctrl-C
 
 ---
 

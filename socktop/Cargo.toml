@@ -27,6 +27,7 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
+tempfile = "3"
 
 [build-dependencies]
 prost-build = "0.13"
