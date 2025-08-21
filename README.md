@@ -186,6 +186,84 @@ The agent stays idle unless queried. When queried, it collects just what’s nee
 
 ---
 
+## Connection Profiles (Named)
+
+You can save frequently used connection settings (URL + optional TLS CA path) under a short name and reuse them later.
+
+Config file location:
+
+- Linux (XDG): `$XDG_CONFIG_HOME/socktop/profiles.json`
+- Fallback (when XDG not set): `~/.config/socktop/profiles.json`
+
+### Creating a profile
+
+First time you specify a new `--profile/-P` name together with a URL (and optional `--tls-ca`), it is saved automatically:
+
+```bash
+socktop --profile prod ws://prod-host:3000/ws
+# With TLS pinning:
+socktop --profile prod-tls --tls-ca /path/to/cert.pem wss://prod-host:8443/ws
+```
+
+If a profile already exists you will be prompted before overwriting:
+
+```
+$ socktop --profile prod ws://new-host:3000/ws
+Overwrite existing profile 'prod'? [y/N]: y
+```
+
+To overwrite without an interactive prompt pass `--save`:
+
+```bash
+socktop --profile prod --save ws://new-host:3000/ws
+```
+
+### Using a saved profile
+
+Just pass the profile name (no URL needed):
+
+```bash
+socktop --profile prod
+socktop -P prod-tls      # short flag
+```
+
+The stored URL (and TLS CA path, if any) will be used. TLS auto-upgrade still applies if a CA path is stored alongside a ws:// URL.
+
+### Interactive selection (no args)
+
+If you run `socktop` with no arguments and at least one profile exists, you will be shown a numbered list to pick from:
+
+```
+$ socktop
+Select profile:
+  1. prod
+  2. prod-tls
+Enter number (or blank to abort): 2
+```
+
+Choosing a number starts the TUI with that profile. Pressing Enter on blank aborts without connecting.
+
+### JSON format
+
+An example `profiles.json` (pretty‑printed):
+
+```json
+{
+  "profiles": {
+    "prod": { "url": "ws://prod-host:3000/ws" },
+    "prod-tls": { "url": "wss://prod-host:8443/ws", "tls_ca": "/home/user/certs/prod-cert.pem" }
+  },
+  "version": 0
+}
+```
+
+Notes:
+- The `tls_ca` path is stored as given; if you move or rotate the certificate update the profile by re-running with `--profile NAME --save`.
+- Deleting a profile: edit the JSON file and remove the entry (TUI does not yet have an in-app delete command).
+- Profiles are client-side convenience only; they do not affect the agent.
+
+---
+
 ## Updating
 
 Update the agent (systemd):
