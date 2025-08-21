@@ -26,15 +26,12 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
     let mut url: Option<String> = None;
     let mut tls_ca: Option<String> = None;
     let mut profile: Option<String> = None;
-    let mut save = false; // --save
-    let mut demo = false; // --demo
-
+    let mut save = false;
+    let mut demo = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                return Err(format!(
-                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]" 
-                ));
+                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"));
             }
             "--tls-ca" | "-t" => {
                 tls_ca = it.next();
@@ -66,9 +63,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
                 if url.is_none() {
                     url = Some(arg);
                 } else {
-                    return Err(format!(
-                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"
-                    ));
+                    return Err(format!("Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"));
                 }
             }
         }
@@ -84,7 +79,6 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Str
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Reuse the same parsing logic for testability
     let parsed = match parse_args(env::args()) {
         Ok(v) => v,
         Err(msg) => {
@@ -92,12 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-
-    // Demo mode short-circuit (ignore other args except conflicting ones)
     if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
         return run_demo_mode(parsed.tls_ca.as_deref()).await;
     }
-
     let profiles_file = load_profiles();
     let req = ProfileRequest {
         profile_name: parsed.profile.clone(),
@@ -105,17 +96,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_ca: parsed.tls_ca.clone(),
     };
     let resolved = req.resolve(&profiles_file);
-
-    // Determine final connection parameters (and maybe mutated profiles to persist)
     let mut profiles_mut = profiles_file.clone();
     let (url, tls_ca): (String, Option<String>) = match resolved {
         ResolveProfile::Direct(u, t) => {
-            // Possibly save if profile specified and --save or new entry
             if let Some(name) = parsed.profile.as_ref() {
                 let existing = profiles_mut.profiles.get(name);
                 match existing {
                     None => {
-                        // New profile: auto-save immediately
                         profiles_mut.profiles.insert(
                             name.clone(),
                             ProfileEntry {
@@ -153,7 +140,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ResolveProfile::Loaded(u, t) => (u, t),
         ResolveProfile::PromptSelect(mut names) => {
-            // Always add demo option to list
             if !names.iter().any(|n| n == "demo") {
                 names.push("demo".into());
             }
@@ -213,7 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-
     let mut app = App::new();
     app.run(&url, tls_ca.as_deref()).await
 }
@@ -228,7 +213,6 @@ fn prompt_yes_no(prompt: &str) -> bool {
         false
     }
 }
-
 fn prompt_string(prompt: &str) -> io::Result<String> {
     eprint!("{prompt}");
     let _ = io::stderr().flush();
@@ -237,33 +221,26 @@ fn prompt_string(prompt: &str) -> io::Result<String> {
     Ok(line)
 }
 
-// --- Demo Mode ---
-
+// Demo mode implementation
 async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let port = 3231;
     let url = format!("ws://127.0.0.1:{port}/ws");
     let child = spawn_demo_agent(port)?;
-    // Use select to handle Ctrl-C and normal quit
     let mut app = App::new();
-    tokio::select! {
-        res = app.run(&url, None) => { drop(child); res }
-        _ = tokio::signal::ctrl_c() => {
-            // Drop child (kills agent) then return
-            drop(child);
-            Ok(())
-        }
-    }
+    tokio::select! { res=app.run(&url,None)=>{ drop(child); res } _=tokio::signal::ctrl_c()=>{ drop(child); Ok(()) } }
 }
-
-struct DemoGuard(std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>);
+struct DemoGuard {
+    port: u16,
+    child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+}
 impl Drop for DemoGuard {
     fn drop(&mut self) {
-        if let Some(mut ch) = self.0.lock().unwrap().take() {
+        if let Some(mut ch) = self.child.lock().unwrap().take() {
             let _ = ch.kill();
         }
+        eprintln!("Stopped demo agent on port {}", self.port);
     }
 }
-
 fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> {
     let candidate = find_agent_executable();
     let mut cmd = std::process::Command::new(candidate);
@@ -272,16 +249,14 @@ fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> 
     cmd.env("SOCKTOP_AGENT_GPU", "0");
     cmd.env("SOCKTOP_AGENT_TEMP", "0");
     let child = cmd.spawn()?;
-    // Give the agent a brief moment to start
     std::thread::sleep(std::time::Duration::from_millis(300));
-    Ok(DemoGuard(std::sync::Arc::new(std::sync::Mutex::new(Some(
-        child,
-    )))))
+    Ok(DemoGuard {
+        port,
+        child: std::sync::Arc::new(std::sync::Mutex::new(Some(child))),
+    })
 }
-
 fn find_agent_executable() -> std::path::PathBuf {
-    let self_exe = std::env::current_exe().ok();
-    if let Some(exe) = self_exe {
+    if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             #[cfg(windows)]
             let name = "socktop_agent.exe";
@@ -293,6 +268,5 @@ fn find_agent_executable() -> std::path::PathBuf {
             }
         }
     }
-    // Fallback to relying on PATH
     std::path::PathBuf::from("socktop_agent")
 }
