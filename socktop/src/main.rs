@@ -154,7 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ResolveProfile::Loaded(u, t) => (u, t),
         ResolveProfile::PromptSelect(mut names) => {
             // Always add demo option to list
-            if !names.iter().any(|n| n == "demo") { names.push("demo".into()); }
+            if !names.iter().any(|n| n == "demo") {
+                names.push("demo".into());
+            }
             eprintln!("Select profile:");
             for (i, n) in names.iter().enumerate() {
                 eprintln!("  {}. {}", i + 1, n);
@@ -166,7 +168,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(idx) = line.trim().parse::<usize>() {
                     if idx >= 1 && idx <= names.len() {
                         let name = &names[idx - 1];
-                        if name == "demo" { return run_demo_mode(parsed.tls_ca.as_deref()).await; }
+                        if name == "demo" {
+                            return run_demo_mode(parsed.tls_ca.as_deref()).await;
+                        }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
                             (entry.url.clone(), entry.tls_ca.clone())
                         } else {
@@ -252,7 +256,13 @@ async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::
 }
 
 struct DemoGuard(std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>);
-impl Drop for DemoGuard { fn drop(&mut self) { if let Some(mut ch) = self.0.lock().unwrap().take() { let _ = ch.kill(); } } }
+impl Drop for DemoGuard {
+    fn drop(&mut self) {
+        if let Some(mut ch) = self.0.lock().unwrap().take() {
+            let _ = ch.kill();
+        }
+    }
+}
 
 fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> {
     let candidate = find_agent_executable();
@@ -264,7 +274,9 @@ fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> 
     let child = cmd.spawn()?;
     // Give the agent a brief moment to start
     std::thread::sleep(std::time::Duration::from_millis(300));
-    Ok(DemoGuard(std::sync::Arc::new(std::sync::Mutex::new(Some(child)))))
+    Ok(DemoGuard(std::sync::Arc::new(std::sync::Mutex::new(Some(
+        child,
+    )))))
 }
 
 fn find_agent_executable() -> std::path::PathBuf {
@@ -276,7 +288,9 @@ fn find_agent_executable() -> std::path::PathBuf {
             #[cfg(not(windows))]
             let name = "socktop_agent";
             let candidate = parent.join(name);
-            if candidate.exists() { return candidate; }
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
     // Fallback to relying on PATH
