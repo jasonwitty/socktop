@@ -102,28 +102,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Possibly save if profile specified and --save or new entry
             if let Some(name) = parsed.profile.as_ref() {
                 let existing = profiles_mut.profiles.get(name);
-                if existing.is_none() || parsed.save {
-                    // If existing and not forced save, prompt
-                    if existing.is_some() && !parsed.save {
-                        if prompt_yes_no(&format!("Overwrite existing profile '{name}'? [y/N]: ")) {
-                            profiles_mut.profiles.insert(
-                                name.clone(),
-                                ProfileEntry {
-                                    url: u.clone(),
-                                    tls_ca: t.clone(),
-                                },
-                            );
-                            let _ = save_profiles(&profiles_mut);
-                        }
-                    } else {
+                match existing {
+                    None => {
+                        // New profile: auto-save immediately
                         profiles_mut.profiles.insert(
                             name.clone(),
-                            ProfileEntry {
-                                url: u.clone(),
-                                tls_ca: t.clone(),
-                            },
+                            ProfileEntry { url: u.clone(), tls_ca: t.clone() },
                         );
                         let _ = save_profiles(&profiles_mut);
+                    }
+                    Some(entry) => {
+                        let changed = entry.url != u || entry.tls_ca != t;
+                        if changed {
+                            if parsed.save {
+                                profiles_mut.profiles.insert(
+                                    name.clone(),
+                                    ProfileEntry { url: u.clone(), tls_ca: t.clone() },
+                                );
+                                let _ = save_profiles(&profiles_mut);
+                            } else if prompt_yes_no(&format!(
+                                "Overwrite existing profile '{name}'? [y/N]: "
+                            )) {
+                                profiles_mut.profiles.insert(
+                                    name.clone(),
+                                    ProfileEntry { url: u.clone(), tls_ca: t.clone() },
+                                );
+                                let _ = save_profiles(&profiles_mut);
+                            } // else: do not overwrite, just connect with provided details
+                        }
                     }
                 }
             }
