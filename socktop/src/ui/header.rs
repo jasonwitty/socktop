@@ -35,12 +35,12 @@ pub fn draw_header(
         "socktop — connecting...".into()
     };
     // TLS indicator: lock vs lock with cross (using ✗). Keep explicit label for clarity.
-    let tls_txt = if is_tls { "🔒 TLS" } else { "�✗ TLS" };
+    let tls_txt = if is_tls { "🔒 TLS" } else { "🔒✗ TLS" };
     // Token indicator
     let tok_txt = if has_token { "🔑 token" } else { "" };
     let mi = metrics_interval.as_millis();
     let pi = procs_interval.as_millis();
-    let intervals = format!("⏱ {mi}ms metrics | {pi}ms procs");
+    let intervals = format!("⏱  {mi}ms metrics | {pi}ms procs");
     let mut parts = vec![base, tls_txt.into()];
     if !tok_txt.is_empty() {
         parts.push(tok_txt.into());
