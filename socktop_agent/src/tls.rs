@@ -44,6 +44,22 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
 
+    // Allow operator to provide extra SANs (comma-separated), e.g. IPs or DNS names
+    if let Ok(extra) = std::env::var("SOCKTOP_AGENT_EXTRA_SANS") {
+        for raw in extra.split(',') {
+            let s = raw.trim();
+            if s.is_empty() { continue; }
+            if let Ok(ip) = s.parse::<IpAddr>() {
+                params.subject_alt_names.push(SanType::IpAddress(ip));
+            } else {
+                match s.to_string().try_into() {
+                    Ok(dns) => params.subject_alt_names.push(SanType::DnsName(dns)),
+                    Err(_) => eprintln!("socktop_agent: ignoring invalid SAN entry: {s}"),
+                }
+            }
+        }
+    }
+
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, hostname.clone());
     params.distinguished_name = dn;
