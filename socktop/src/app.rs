@@ -67,6 +67,9 @@ pub struct App {
 
     // For reconnects
     ws_url: String,
+    // Security / status flags
+    pub is_tls: bool,
+    pub has_token: bool,
 }
 
 impl App {
@@ -97,6 +100,8 @@ impl App {
             disks_interval: Duration::from_secs(5),
             metrics_interval: Duration::from_millis(500),
             ws_url: String::new(),
+            is_tls: false,
+            has_token: false,
         }
     }
 
@@ -107,6 +112,12 @@ impl App {
         if let Some(p) = procs_ms {
             self.procs_interval = Duration::from_millis(p.max(200));
         }
+        self
+    }
+
+    pub fn with_status(mut self, is_tls: bool, has_token: bool) -> Self {
+        self.is_tls = is_tls;
+        self.has_token = has_token;
         self
     }
 
@@ -363,7 +374,15 @@ impl App {
             .split(area);
 
         // Header
-        draw_header(f, rows[0], self.last_metrics.as_ref());
+        draw_header(
+            f,
+            rows[0],
+            self.last_metrics.as_ref(),
+            self.is_tls,
+            self.has_token,
+            self.metrics_interval,
+            self.procs_interval,
+        );
 
         // Top row: left CPU avg, right Per-core (full top-right)
         let top_lr = ratatui::layout::Layout::default()
@@ -485,6 +504,8 @@ impl Default for App {
             disks_interval: Duration::from_secs(5),
             metrics_interval: Duration::from_millis(500),
             ws_url: String::new(),
+            is_tls: false,
+            has_token: false,
         }
     }
 }

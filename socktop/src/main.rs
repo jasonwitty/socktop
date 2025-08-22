@@ -272,7 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    let mut app = App::new().with_intervals(metrics_interval_ms, processes_interval_ms);
+    let is_tls = url.starts_with("wss://");
+    let has_token = url.contains("token=");
+    let mut app = App::new()
+        .with_intervals(metrics_interval_ms, processes_interval_ms)
+        .with_status(is_tls, has_token);
     if parsed.dry_run {
         return Ok(());
     }
