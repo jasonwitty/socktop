@@ -48,7 +48,9 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
     if let Ok(extra) = std::env::var("SOCKTOP_AGENT_EXTRA_SANS") {
         for raw in extra.split(',') {
             let s = raw.trim();
-            if s.is_empty() { continue; }
+            if s.is_empty() {
+                continue;
+            }
             if let Ok(ip) = s.parse::<IpAddr>() {
                 params.subject_alt_names.push(SanType::IpAddress(ip));
             } else {
