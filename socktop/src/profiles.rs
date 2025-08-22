@@ -9,6 +9,10 @@ pub struct ProfileEntry {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
