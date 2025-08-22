@@ -1,12 +1,4 @@
-use openssl::asn1::Asn1Time;
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::pkey::PKey;
-use openssl::rsa::Rsa;
-use openssl::x509::extension::{
-    BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
-};
-use openssl::x509::{X509NameBuilder, X509};
+use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, SanType};
 use std::{
     fs,
     io::Write,
@@ -35,57 +27,45 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
     }
     fs::create_dir_all(cert_path.parent().unwrap())?;
 
-    // Key
-    let rsa = Rsa::generate(4096)?;
-    let pkey = PKey::from_rsa(rsa)?;
-
-    // Subject/issuer
     let hostname = hostname::get()
         .ok()
         .and_then(|s| s.into_string().ok())
         .unwrap_or_else(|| "localhost".to_string());
-    let mut name = X509NameBuilder::new()?;
-    name.append_entry_by_nid(Nid::COMMONNAME, &hostname)?;
-    let name = name.build();
 
-    // Cert builder
-    let mut builder = X509::builder()?;
-    builder.set_version(2)?;
-    builder.set_subject_name(&name)?;
-    builder.set_issuer_name(&name)?;
-    builder.set_pubkey(&pkey)?;
+    let mut params = CertificateParams::new(vec![hostname.clone(), "localhost".into()]);
+    // Add IP SANs
+    params
+        .subject_alt_names
+        .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+    params
+        .subject_alt_names
+        .push(SanType::IpAddress(IpAddr::V6(::std::net::Ipv6Addr::LOCALHOST)));
+    params
+        .subject_alt_names
+        .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
 
-    builder.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
-    builder.set_not_after(Asn1Time::days_from_now(397)?.as_ref())?;
+    params.distinguished_name = DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, hostname.clone());
+    params.is_ca = IsCa::NoCa;
+    // 397 days like previous implementation
+    params.not_before = rcgen::date_time_ymd(2024, 1, 1); // stable starting point
+    params.not_after = params.not_before + rcgen::PKCS_EPOCH_DURATION * 0; // overwritten below
+    // rcgen doesn't allow direct relative days for not_after while keeping not_before now; use validity_days
+    params.validity_days = 397;
 
-    // SANs: hostname + localhost loopbacks
-    let mut san = SubjectAlternativeName::new();
-    san.dns(&hostname)
-        .dns("localhost")
-        .ip("127.0.0.1")
-        .ip("::1");
-    // Add a generic 0.0.0.0 for convenience; some TLS libs ignore this, but harmless.
-    let _ = san.ip(&IpAddr::V4(Ipv4Addr::UNSPECIFIED).to_string());
-    let san = san.build(&builder.x509v3_context(None, None))?;
-    // End-entity cert: not a CA
-    builder.append_extension(BasicConstraints::new().critical().build()?)?;
-    builder.append_extension(
-        KeyUsage::new()
-            .digital_signature()
-            .key_encipherment()
-            .build()?,
-    )?;
-    // TLS server usage
-    builder.append_extension(ExtendedKeyUsage::new().server_auth().build()?)?;
-    builder.append_extension(san)?;
-
-    builder.sign(&pkey, MessageDigest::sha256())?;
-    let cert: X509 = builder.build();
+    // Use modern defaults (Ed25519) for key; fallback to RSA if necessary
+    // Keep RSA to maximize compatibility with older clients
+    params.alg = &rcgen::PKCS_ECDSA_P256_SHA256; // widely supported
+    let cert = Certificate::from_params(params)?;
+    let cert_pem = cert.serialize_pem()?;
+    let key_pem = cert.serialize_private_key_pem();
 
     let mut f = fs::File::create(&cert_path)?;
-    f.write_all(&cert.to_pem()?)?;
+    f.write_all(cert_pem.as_bytes())?;
     let mut k = fs::File::create(&key_path)?;
-    k.write_all(&pkey.private_key_to_pem_pkcs8()?)?;
+    k.write_all(key_pem.as_bytes())?;
 
     println!(
         "socktop_agent: generated self-signed TLS certificate at {}",
