@@ -304,6 +304,11 @@ Tip: If only the binary changed, restart is enough. If the unit file changed, ru
     - Linux (XDG): $XDG_CONFIG_HOME/socktop_agent/tls/{cert.pem,key.pem} (defaults to ~/.config)
     - The agent prints these paths on creation.
   - You can set XDG_CONFIG_HOME before first run to control where certs are written.
+  - Additional SANs: set `SOCKTOP_AGENT_EXTRA_SANS` (comma‑separated) before first TLS start to include extra IPs/DNS names in the cert. Example:
+    ```bash
+    SOCKTOP_AGENT_EXTRA_SANS="192.168.1.101,myhost.internal" socktop_agent --enableSSL
+    ```
+    This prevents client errors like `NotValidForName` when connecting via an IP not present in the default cert SAN list.
   - Expiry / rotation: the generated cert is valid for ~397 days from creation. If the agent fails to start with an "ExpiredCertificate" error (or your client reports expiry), simply delete the existing cert and key:
     ```bash
     rm ~/.config/socktop_agent/tls/cert.pem ~/.config/socktop_agent/tls/key.pem
