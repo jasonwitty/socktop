@@ -1,4 +1,5 @@
 use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, SanType};
+use time::{Duration, OffsetDateTime};
 use std::{
     fs,
     io::Write,
@@ -47,10 +48,10 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
     dn.push(DnType::CommonName, hostname.clone());
     params.distinguished_name = dn;
     params.is_ca = IsCa::NoCa;
-    // Keep default validity (30 days) but extend to ~1 year (397 days)
-    // rcgen 0.13 doesn't have validity_days; use not_before/not_after
-    params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    params.not_after = rcgen::date_time_ymd(2025, 2, 2); // ~397 days later
+    // Dynamic validity: start slightly in the past to avoid clock skew issues, end ~397 days later
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::minutes(5);
+    params.not_after = now + Duration::days(397);
 
     // Generate key pair (default is ECDSA P256 SHA256)
     let key_pair = rcgen::KeyPair::generate()?; // defaults to ECDSA P256 SHA256
