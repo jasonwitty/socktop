@@ -153,20 +153,41 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
             .collect()
     };
 
-    // GPUs: refresh only when cache is stale
-    let gpus = if cached_gpus().is_some() {
-        cached_gpus()
-    } else if gpu_enabled() {
-        let v = match collect_all_gpus() {
-            Ok(v) if !v.is_empty() => Some(v),
-            Ok(_) => None,
-            Err(e) => {
-                warn!("gpu collection failed: {e}");
-                None
+    // GPUs: if we already determined none exist, short-circuit (no repeated probing)
+    let gpus = if gpu_enabled() {
+        if state.gpu_checked.load(std::sync::atomic::Ordering::Acquire)
+            && !state.gpu_present.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            None
+        } else if cached_gpus().is_some() {
+            cached_gpus()
+        } else {
+            let v = match collect_all_gpus() {
+                Ok(v) if !v.is_empty() => Some(v),
+                Ok(_) => None,
+                Err(e) => {
+                    warn!("gpu collection failed: {e}");
+                    None
+                }
+            };
+            // First probe records presence; subsequent calls rely on cache flags.
+            if !state
+                .gpu_checked
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                if v.is_some() {
+                    state
+                        .gpu_present
+                        .store(true, std::sync::atomic::Ordering::Release);
+                } else {
+                    state
+                        .gpu_present
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
             }
-        };
-        set_gpus(v.clone());
-        v
+            set_gpus(v.clone());
+            v
+        }
     } else {
         None
     };

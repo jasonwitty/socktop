@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 use sysinfo::{Components, Disks, Networks, System};
 use tokio::sync::Mutex;
@@ -34,6 +34,9 @@ pub struct AppState {
     pub client_count: Arc<AtomicUsize>,
 
     pub auth_token: Option<String>,
+    // GPU negative cache (probe once). gpu_checked=true after first attempt; gpu_present reflects result.
+    pub gpu_checked: Arc<AtomicBool>,
+    pub gpu_present: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -54,6 +57,8 @@ impl AppState {
             auth_token: std::env::var("SOCKTOP_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            gpu_checked: Arc::new(AtomicBool::new(false)),
+            gpu_present: Arc::new(AtomicBool::new(false)),
         }
     }
 }
