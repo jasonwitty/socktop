@@ -37,6 +37,12 @@ fn arg_value(name: &str) -> Option<String> {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Version flag (print and exit). Keep before heavy initialization.
+    if arg_flag("--version") || arg_flag("-V") {
+        println!("socktop_agent {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let state = AppState::new();
 
     // Start background sampler (adjust cadence as needed)
