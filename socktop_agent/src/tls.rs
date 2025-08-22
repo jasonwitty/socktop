@@ -33,10 +33,12 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
         .unwrap_or_else(|| "localhost".to_string());
 
     let mut params = CertificateParams::new(vec![hostname.clone(), "localhost".into()])?;
-    params.subject_alt_names.push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
     params
         .subject_alt_names
-        .push(SanType::IpAddress(IpAddr::V6(::std::net::Ipv6Addr::LOCALHOST)));
+        .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+    params.subject_alt_names.push(SanType::IpAddress(IpAddr::V6(
+        ::std::net::Ipv6Addr::LOCALHOST,
+    )));
     params
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
