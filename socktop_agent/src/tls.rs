@@ -1,11 +1,11 @@
 use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, SanType};
-use time::{Duration, OffsetDateTime};
 use std::{
     fs,
     io::Write,
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
 };
+use time::{Duration, OffsetDateTime};
 
 fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
