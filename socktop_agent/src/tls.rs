@@ -1,4 +1,4 @@
-use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, SanType};
 use std::{
     fs,
     io::Write,
@@ -32,11 +32,8 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
         .and_then(|s| s.into_string().ok())
         .unwrap_or_else(|| "localhost".to_string());
 
-    let mut params = CertificateParams::new(vec![hostname.clone(), "localhost".into()]);
-    // Add IP SANs
-    params
-        .subject_alt_names
-        .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+    let mut params = CertificateParams::new(vec![hostname.clone(), "localhost".into()])?;
+    params.subject_alt_names.push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
     params
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V6(::std::net::Ipv6Addr::LOCALHOST)));
@@ -44,23 +41,20 @@ pub fn ensure_self_signed_cert() -> anyhow::Result<(PathBuf, PathBuf)> {
         .subject_alt_names
         .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
 
-    params.distinguished_name = DistinguishedName::new();
-    params
-        .distinguished_name
-        .push(DnType::CommonName, hostname.clone());
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, hostname.clone());
+    params.distinguished_name = dn;
     params.is_ca = IsCa::NoCa;
-    // 397 days like previous implementation
-    params.not_before = rcgen::date_time_ymd(2024, 1, 1); // stable starting point
-    params.not_after = params.not_before + rcgen::PKCS_EPOCH_DURATION * 0; // overwritten below
-    // rcgen doesn't allow direct relative days for not_after while keeping not_before now; use validity_days
-    params.validity_days = 397;
+    // Keep default validity (30 days) but extend to ~1 year (397 days)
+    // rcgen 0.13 doesn't have validity_days; use not_before/not_after
+    params.not_before = rcgen::date_time_ymd(2024, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2025, 2, 2); // ~397 days later
 
-    // Use modern defaults (Ed25519) for key; fallback to RSA if necessary
-    // Keep RSA to maximize compatibility with older clients
-    params.alg = &rcgen::PKCS_ECDSA_P256_SHA256; // widely supported
-    let cert = Certificate::from_params(params)?;
-    let cert_pem = cert.serialize_pem()?;
-    let key_pem = cert.serialize_private_key_pem();
+    // Generate key pair (default is ECDSA P256 SHA256)
+    let key_pair = rcgen::KeyPair::generate()?; // defaults to ECDSA P256 SHA256
+    let cert = params.self_signed(&key_pair)?;
+    let cert_pem = cert.pem();
+    let key_pem = key_pair.serialize_pem();
 
     let mut f = fs::File::create(&cert_path)?;
     f.write_all(cert_pem.as_bytes())?;
