@@ -460,6 +460,18 @@ cargo run -p socktop -- ws://127.0.0.1:3000/ws
 cargo run -p socktop_agent -- --enableSSL --port 8443
 ```
 
+### Auto-format on commit
+
+A sample pre-commit hook that runs `cargo fmt --all` is provided in `.githooks/pre-commit`.
+Enable it (one-time):
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
+
+Every commit will then format Rust sources and restage them automatically.
+
 ---
 
 ## Roadmap

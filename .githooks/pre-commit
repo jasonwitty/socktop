@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-commit] Running cargo fmt --all" >&2
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "[pre-commit] cargo not found in PATH" >&2
+  exit 1
+fi
+
+cargo fmt --all
+
+# Stage any Rust files that were reformatted
+changed=$(git diff --name-only --diff-filter=M | grep -E '\\.rs$' || true)
+if [ -n "$changed" ]; then
+  echo "$changed" | xargs git add
+  echo "[pre-commit] Added formatted files" >&2
+fi
+
+# Fail if further diffs remain (shouldn't happen normally)
+unfmt=$(git diff --name-only --diff-filter=M | grep -E '\\.rs$' || true)
+if [ -n "$unfmt" ]; then
+  echo "[pre-commit] Some Rust files still differ after formatting:" >&2
+  echo "$unfmt" >&2
+  exit 1
+fi
+
+exit 0
