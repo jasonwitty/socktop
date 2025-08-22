@@ -1,11 +1,11 @@
 //! Top header with hostname and CPU temperature indicator.
 
 use crate::types::Metrics;
-use std::time::Duration;
 use ratatui::{
     layout::Rect,
     widgets::{Block, Borders},
 };
+use std::time::Duration;
 
 pub fn draw_header(
     f: &mut ratatui::Frame<'_>,
@@ -34,13 +34,17 @@ pub fn draw_header(
     } else {
         "socktop — connecting...".into()
     };
-    let tls_txt = if is_tls { "🔒TLS" } else { "🔓WS" };
-    let tok_txt = if has_token { "🔑token" } else { "" };
+    // TLS indicator: lock vs lock with cross (using ✗). Keep explicit label for clarity.
+    let tls_txt = if is_tls { "🔒 TLS" } else { "�✗ TLS" };
+    // Token indicator
+    let tok_txt = if has_token { "🔑 token" } else { "" };
     let mi = metrics_interval.as_millis();
     let pi = procs_interval.as_millis();
-    let intervals = format!("⏱{mi}ms metrics | {pi}ms procs");
+    let intervals = format!("⏱ {mi}ms metrics | {pi}ms procs");
     let mut parts = vec![base, tls_txt.into()];
-    if !tok_txt.is_empty() { parts.push(tok_txt.into()); }
+    if !tok_txt.is_empty() {
+        parts.push(tok_txt.into());
+    }
     parts.push(intervals);
     parts.push("(q to quit)".into());
     let title = parts.join(" | ");
