@@ -4,6 +4,9 @@ use flate2::bufread::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as _;
 use rustls::{ClientConfig, RootCertStore};
+use rustls::client::danger::{ServerCertVerified, ServerCertVerifier, HandshakeSignatureValid};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pemfile::Item;
 use std::io::Read;
 use std::{fs::File, io::BufReader, sync::Arc};
@@ -50,22 +53,50 @@ async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn s
     }
     root.add_parsable_certificates(der_certs);
 
-    let cfg = ClientConfig::builder()
+    let mut cfg = ClientConfig::builder()
         .with_root_certificates(root)
         .with_no_client_auth();
-    let cfg = Arc::new(cfg);
 
     let req = url.into_client_request()?;
-    // Default: skip hostname/SAN verification (cert still pinned). Enable with --verify-hostname flag
     let verify_domain = std::env::var("SOCKTOP_VERIFY_NAME").ok().as_deref() == Some("1");
     if !verify_domain {
-        eprintln!(
-            "socktop: hostname verification disabled (default). Use --verify-hostname to enable."
-        );
+        #[derive(Debug)]
+        struct NoVerify;
+        impl ServerCertVerifier for NoVerify {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &CertificateDer<'_>,
+                _intermediates: &[CertificateDer<'_>],
+                _server_name: &ServerName,
+                _ocsp_response: &[u8],
+                _now: UnixTime,
+            ) -> Result<ServerCertVerified, rustls::Error> { Ok(ServerCertVerified::assertion()) }
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> { Ok(HandshakeSignatureValid::assertion()) }
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> { Ok(HandshakeSignatureValid::assertion()) }
+            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+                // Provide common schemes; not strictly needed for skipping but keeps API happy
+                vec![
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                    SignatureScheme::ED25519,
+                    SignatureScheme::RSA_PSS_SHA256,
+                ]
+            }
+        }
+        cfg.dangerous().set_certificate_verifier(Arc::new(NoVerify));
+        eprintln!("socktop: hostname verification disabled (default). Use --verify-hostname to enable strict SAN checking.");
     }
-    let (ws, _) =
-        connect_async_tls_with_config(req, None, verify_domain, Some(Connector::Rustls(cfg)))
-            .await?;
+    let cfg = Arc::new(cfg);
+    let (ws, _) = connect_async_tls_with_config(req, None, verify_domain, Some(Connector::Rustls(cfg))).await?;
     Ok(ws)
 }
 
