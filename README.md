@@ -126,7 +126,8 @@ Notes:
 - After installing Rust via rustup, reload your shell (e.g., exec bash) so cargo is on PATH.
 - Windows: you can also grab prebuilt EXEs from GitHub Actions artifacts if rustup scares you. It shouldn’t. Be brave.
 
-Option B: System-wide agent (Linux)
+System-wide agent (Linux)
+
 ```bash
 # If you installed with cargo, binaries are in ~/.cargo/bin
 sudo install -o root -g root -m 0755 "$HOME/.cargo/bin/socktop_agent" /usr/local/bin/socktop_agent
@@ -136,6 +137,36 @@ sudo install -o root -g root -m 0644 docs/socktop-agent.service /etc/systemd/sys
 sudo systemctl daemon-reload
 sudo systemctl enable --now socktop-agent
 ```
+
+```bash
+
+# Enable SSL
+
+# Stop service
+sudo systemctl stop socktop-agent
+
+# Edit service to append SSL option and port
+sudo micro /etc/systemd/system/socktop-agent.service
+
+--
+ExecStart=/usr/local/bin/socktop_agent --enableSSL --port 8443
+--
+
+# Reload
+sudo systemctl daemon-reload
+
+# Restart
+sudo systemctl start socktop-agent
+
+# check logs for certificate location
+sudo journalctl -u socktop-agent -f
+
+--
+Aug 22 22:25:26 rpi-master socktop_agent[2913998]: socktop_agent: generated self-signed TLS certificate at /var/lib/socktop/.config/socktop_agent/tls/cert.pem
+--
+
+```
+
 
 ---
 

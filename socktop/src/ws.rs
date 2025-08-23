@@ -3,9 +3,9 @@
 use flate2::bufread::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as _;
-use rustls::{ClientConfig, RootCertStore};
-use rustls::client::danger::{ServerCertVerified, ServerCertVerifier, HandshakeSignatureValid};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, RootCertStore};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use rustls_pemfile::Item;
 use std::io::Read;
@@ -70,19 +70,25 @@ async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn s
                 _server_name: &ServerName,
                 _ocsp_response: &[u8],
                 _now: UnixTime,
-            ) -> Result<ServerCertVerified, rustls::Error> { Ok(ServerCertVerified::assertion()) }
+            ) -> Result<ServerCertVerified, rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
             fn verify_tls12_signature(
                 &self,
                 _message: &[u8],
                 _cert: &CertificateDer<'_>,
                 _dss: &DigitallySignedStruct,
-            ) -> Result<HandshakeSignatureValid, rustls::Error> { Ok(HandshakeSignatureValid::assertion()) }
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
             fn verify_tls13_signature(
                 &self,
                 _message: &[u8],
                 _cert: &CertificateDer<'_>,
                 _dss: &DigitallySignedStruct,
-            ) -> Result<HandshakeSignatureValid, rustls::Error> { Ok(HandshakeSignatureValid::assertion()) }
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
             fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
                 // Provide common schemes; not strictly needed for skipping but keeps API happy
                 vec![
@@ -96,7 +102,9 @@ async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn s
         eprintln!("socktop: hostname verification disabled (default). Use --verify-hostname to enable strict SAN checking.");
     }
     let cfg = Arc::new(cfg);
-    let (ws, _) = connect_async_tls_with_config(req, None, verify_domain, Some(Connector::Rustls(cfg))).await?;
+    let (ws, _) =
+        connect_async_tls_with_config(req, None, verify_domain, Some(Connector::Rustls(cfg)))
+            .await?;
     Ok(ws)
 }
 
