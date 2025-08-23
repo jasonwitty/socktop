@@ -56,8 +56,12 @@ async fn connect_with_ca(url: &str, ca_path: &str) -> Result<WsStream, Box<dyn s
     let cfg = Arc::new(cfg);
 
     let req = url.into_client_request()?;
-    let (ws, _) =
-        connect_async_tls_with_config(req, None, true, Some(Connector::Rustls(cfg))).await?;
+    // Default: skip hostname/SAN verification (cert still pinned). Enable with --verify-hostname flag
+    let verify_domain = std::env::var("SOCKTOP_VERIFY_NAME").ok().as_deref() == Some("1");
+    if !verify_domain {
+        eprintln!("socktop: hostname verification disabled (default). Use --verify-hostname to enable.");
+    }
+    let (ws, _) = connect_async_tls_with_config(req, None, verify_domain, Some(Connector::Rustls(cfg))).await?;
     Ok(ws)
 }
 

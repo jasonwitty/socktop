@@ -21,6 +21,7 @@ pub(crate) struct ParsedArgs {
     dry_run: bool, // hidden test helper: skip connecting
     metrics_interval_ms: Option<u64>,
     processes_interval_ms: Option<u64>,
+    verify_hostname: bool,
 }
 
 pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
@@ -34,13 +35,20 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
     let mut dry_run = false;
     let mut metrics_interval_ms: Option<u64> = None;
     let mut processes_interval_ms: Option<u64> = None;
+    let mut verify_hostname = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"));
+                return Err(format!("Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"));
             }
             "--tls-ca" | "-t" => {
                 tls_ca = it.next();
+            }
+            "--verify-hostname" => {
+                // opt-in hostname (SAN) verification
+                // default behavior is to skip it for easier home network usage
+                // (still pins the provided certificate)
+                verify_hostname = true;
             }
             "--profile" | "-P" => {
                 profile = it.next();
@@ -89,7 +97,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                 if url.is_none() {
                     url = Some(arg);
                 } else {
-                    return Err(format!("Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"));
+                    return Err(format!("Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"));
                 }
             }
         }
@@ -103,6 +111,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
         dry_run,
         metrics_interval_ms,
         processes_interval_ms,
+        verify_hostname,
     })
 }
 
@@ -117,6 +126,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
         return run_demo_mode(parsed.tls_ca.as_deref()).await;
+    }
+    if parsed.verify_hostname {
+        // Set env var consumed by ws::connect logic
+        std::env::set_var("SOCKTOP_VERIFY_NAME", "1");
     }
     let profiles_file = load_profiles();
     let req = ProfileRequest {
