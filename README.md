@@ -159,6 +159,8 @@ socktop ws://HOST:3000/ws
 socktop "ws://HOST:3000/ws?token=changeme"
 # TLS with pinned server certificate (recommended over the internet):
 socktop --tls-ca /path/to/cert.pem wss://HOST:8443/ws
+# (By default hostname/SAN verification is skipped for ease on home networks. To enforce it add --verify-hostname)
+socktop --verify-hostname --tls-ca /path/to/cert.pem wss://HOST:8443/ws
 # shorthand:
 socktop -t /path/to/cert.pem wss://HOST:8443/ws
 # Note: providing --tls-ca/-t automatically upgrades ws:// to wss:// if you forget
@@ -397,6 +399,7 @@ socktop --tls-ca /path/to/agent/cert.pem wss://HOST:8443/ws
 Notes:
 - Do not copy the private key off the server; only the cert.pem is needed by clients.
 - When --tls-ca/-t is supplied, the client auto‑upgrades ws:// to wss:// to avoid protocol mismatch.
+- Hostname (SAN) verification is DISABLED by default (the cert is still pinned). Use `--verify-hostname` to enable strict SAN checking.
 - You can run multiple clients with different cert paths by passing --tls-ca per invocation.
 
 ---
