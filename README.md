@@ -66,7 +66,7 @@ sudo apt-get install libdrm-dev libdrm-amdgpu1
 
 Two components:
 
-1) Agent (remote): small Rust WS server using sysinfo + /proc. It collects on demand when the client asks (fast metrics ~500 ms, processes ~2 s, disks ~5 s). No background loop when nobody is connected.
+1) Agent (remote): small Rust WS server using sysinfo + /proc. It collects metrics only when the client requests them over the WebSocket (request-driven). No background sampling loop.
 
 2) Client (local): TUI that connects to ws://HOST:PORT/ws (or wss://HOST:PORT/ws when TLS is enabled) and renders updates.
 

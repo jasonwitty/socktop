@@ -1,10 +1,9 @@
-//! socktop agent entrypoint: sets up sysinfo handles, launches a sampler,
-//! and serves a WebSocket endpoint at /ws.
+//! socktop agent entrypoint: sets up sysinfo handles and serves a WebSocket endpoint at /ws.
 
 mod gpu;
 mod metrics;
 mod proto;
-mod sampler;
+// sampler module removed (metrics now purely request-driven)
 mod state;
 mod types;
 mod ws;
@@ -15,7 +14,6 @@ use std::str::FromStr;
 
 mod tls;
 
-use crate::sampler::{spawn_disks_sampler, spawn_process_sampler, spawn_sampler};
 use state::AppState;
 
 fn arg_flag(name: &str) -> bool {
@@ -45,13 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::new();
 
-    // Start background sampler (adjust cadence as needed)
-    // 500ms fast metrics
-    let _h_fast = spawn_sampler(state.clone(), std::time::Duration::from_millis(500));
-    // 2s processes (top 50)
-    let _h_procs = spawn_process_sampler(state.clone(), std::time::Duration::from_secs(2), 50);
-    // 5s disks
-    let _h_disks = spawn_disks_sampler(state.clone(), std::time::Duration::from_secs(5));
+    // No background samplers: metrics collected on-demand per websocket request.
 
     // Web app: route /ws to the websocket handler
     async fn healthz() -> StatusCode {
