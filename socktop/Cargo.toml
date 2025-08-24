@@ -18,6 +18,7 @@ crossterm = { workspace = true }
 anyhow = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 dirs-next = { workspace = true }
+sysinfo = { workspace = true }
 rustls = "0.23"
 rustls-pemfile = "2.1"
 prost = { workspace = true }
