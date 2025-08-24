@@ -11,9 +11,9 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
 use std::sync::Mutex;
+use std::time::Duration as StdDuration;
 use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
-use std::time::Duration as StdDuration;
 use tracing::warn;
 
 // Runtime toggles (read once)

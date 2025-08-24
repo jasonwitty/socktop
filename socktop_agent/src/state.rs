@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 use tokio::sync::Mutex;
-use std::time::{Duration, Instant};
 
 pub type SharedSystem = Arc<Mutex<System>>;
 pub type SharedComponents = Arc<Mutex<Components>>;
@@ -54,7 +54,10 @@ pub struct CacheEntry<T> {
 
 impl<T> CacheEntry<T> {
     pub fn new() -> Self {
-        Self { at: None, value: None }
+        Self {
+            at: None,
+            value: None,
+        }
     }
     pub fn is_fresh(&self, ttl: Duration) -> bool {
         self.at.is_some_and(|t| t.elapsed() < ttl) && self.value.is_some()
