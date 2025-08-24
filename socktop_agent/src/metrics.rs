@@ -452,6 +452,6 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             let mut cache = state.cache_processes.lock().await;
             cache.set(payload.clone());
         }
-        return payload;
+        payload
     }
 }
