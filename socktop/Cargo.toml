@@ -9,21 +9,18 @@ license = "MIT"
 [dependencies]
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
-futures = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
-chrono = { workspace = true }
 anyhow = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 dirs-next = { workspace = true }
 rustls = "0.23"
 rustls-pemfile = "2.1"
 prost = { workspace = true }
-bytes = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
