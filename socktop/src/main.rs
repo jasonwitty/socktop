@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (u, t, entry.metrics_interval_ms, entry.processes_interval_ms)
         }
         ResolveProfile::PromptSelect(mut names) => {
-            if !names.iter().any(|n| n == "demo") {
+            if !names.iter().any(|n: &String| n == "demo") {
                 names.push("demo".into());
             }
             eprintln!("Select profile:");
@@ -281,10 +281,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (url.trim().to_string(), ca_opt, mi, pi)
         }
         ResolveProfile::None => {
-            eprintln!("No URL provided and no profiles to select.");
-            return Ok(());
+            //eprintln!("No URL provided and no profiles to select.");
+
+            //first run, no args, no profiles: show welcome message and offer demo mode
+            if profiles_mut.profiles.is_empty() && parsed.url.is_none() {
+                eprintln!("Welcome to socktop!");
+                eprintln!("It looks like this is your first time running the application.");
+                eprintln!("You can connect to a socktop_agent instance to monitor system metrics and processes.");
+                eprintln!("If you don't have an agent running, you can try the demo mode.");
+                if prompt_yes_no("Would you like to start the demo mode now? [Y/n]: ") {
+                    return run_demo_mode(parsed.tls_ca.as_deref()).await;
+                } else {
+                    eprintln!("Aborting. You can run 'socktop --help' for usage information.");
+                    return Ok(());
+                }
+            }
+            return Err("No URL provided and no profiles to select.".into());
         }
     };
+
     let is_tls = url.starts_with("wss://");
     let has_token = url.contains("token=");
     let mut app = App::new()
