@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 use tokio::sync::Mutex;
 
@@ -25,6 +26,7 @@ pub struct AppState {
     pub components: SharedComponents,
     pub disks: SharedDisks,
     pub networks: SharedNetworks,
+    pub hostname: String,
 
     // For correct per-process CPU% using /proc deltas (Linux only path uses this tracker)
     #[cfg(target_os = "linux")]
@@ -37,6 +39,39 @@ pub struct AppState {
     // GPU negative cache (probe once). gpu_checked=true after first attempt; gpu_present reflects result.
     pub gpu_checked: Arc<AtomicBool>,
     pub gpu_present: Arc<AtomicBool>,
+
+    // Lightweight on-demand caches (TTL based) to cap CPU under bursty polling.
+    pub cache_metrics: Arc<Mutex<CacheEntry<crate::types::Metrics>>>,
+    pub cache_disks: Arc<Mutex<CacheEntry<Vec<crate::types::DiskInfo>>>>,
+    pub cache_processes: Arc<Mutex<CacheEntry<crate::types::ProcessesPayload>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CacheEntry<T> {
+    pub at: Option<Instant>,
+    pub value: Option<T>,
+}
+
+impl<T> CacheEntry<T> {
+    pub fn new() -> Self {
+        Self {
+            at: None,
+            value: None,
+        }
+    }
+    pub fn is_fresh(&self, ttl: Duration) -> bool {
+        self.at.is_some_and(|t| t.elapsed() < ttl) && self.value.is_some()
+    }
+    pub fn set(&mut self, v: T) {
+        self.value = Some(v);
+        self.at = Some(Instant::now());
+    }
+    pub fn take_clone(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.value.clone()
+    }
 }
 
 impl AppState {
@@ -51,6 +86,7 @@ impl AppState {
             components: Arc::new(Mutex::new(components)),
             disks: Arc::new(Mutex::new(disks)),
             networks: Arc::new(Mutex::new(networks)),
+            hostname: System::host_name().unwrap_or_else(|| "unknown".into()),
             #[cfg(target_os = "linux")]
             proc_cpu: Arc::new(Mutex::new(ProcCpuTracker::default())),
             client_count: Arc::new(AtomicUsize::new(0)),
@@ -59,6 +95,9 @@ impl AppState {
                 .filter(|s| !s.is_empty()),
             gpu_checked: Arc::new(AtomicBool::new(false)),
             gpu_present: Arc::new(AtomicBool::new(false)),
+            cache_metrics: Arc::new(Mutex::new(CacheEntry::new())),
+            cache_disks: Arc::new(Mutex::new(CacheEntry::new())),
+            cache_processes: Arc::new(Mutex::new(CacheEntry::new())),
         }
     }
 }

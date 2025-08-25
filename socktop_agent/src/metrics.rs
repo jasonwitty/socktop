@@ -11,8 +11,9 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
 use std::sync::Mutex;
+use std::time::Duration as StdDuration;
 use std::time::{Duration, Instant};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
 // Runtime toggles (read once)
@@ -97,6 +98,20 @@ fn set_gpus(v: Option<Vec<crate::gpu::GpuMetrics>>) {
 
 // Collect only fast-changing metrics (CPU/mem/net + optional temps/gpus).
 pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
+    // TTL (ms) overridable via env, default 250ms
+    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_METRICS_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(250);
+    let ttl = StdDuration::from_millis(ttl_ms);
+    {
+        let cache = state.cache_metrics.lock().await;
+        if cache.is_fresh(ttl) {
+            if let Some(c) = cache.take_clone() {
+                return c;
+            }
+        }
+    }
     let mut sys = state.sys.lock().await;
     if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         sys.refresh_cpu_usage();
@@ -105,7 +120,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         warn!("sysinfo selective refresh panicked: {e:?}");
     }
 
-    let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
+    let hostname = state.hostname.clone();
     let cpu_total = sys.global_cpu_usage();
     let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
     let mem_total = sys.total_memory();
@@ -192,7 +207,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         None
     };
 
-    Metrics {
+    let metrics = Metrics {
         cpu_total,
         cpu_per_core,
         mem_total,
@@ -205,21 +220,44 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         networks,
         top_processes: Vec::new(),
         gpus,
+    };
+    {
+        let mut cache = state.cache_metrics.lock().await;
+        cache.set(metrics.clone());
     }
+    metrics
 }
 
 // Cached disks
 pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
+    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_DISKS_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000);
+    let ttl = StdDuration::from_millis(ttl_ms);
+    {
+        let cache = state.cache_disks.lock().await;
+        if cache.is_fresh(ttl) {
+            if let Some(v) = cache.take_clone() {
+                return v;
+            }
+        }
+    }
     let mut disks_list = state.disks.lock().await;
     disks_list.refresh(false); // don't drop missing disks
-    disks_list
+    let disks: Vec<DiskInfo> = disks_list
         .iter()
         .map(|d| DiskInfo {
             name: d.name().to_string_lossy().into_owned(),
             total: d.total_space(),
             available: d.available_space(),
         })
-        .collect()
+        .collect();
+    {
+        let mut cache = state.cache_disks.lock().await;
+        cache.set(disks.clone());
+    }
+    disks
 }
 
 // Linux-only helpers and implementation using /proc deltas for accurate CPU%.
@@ -260,8 +298,22 @@ fn read_proc_jiffies(pid: u32) -> Option<u64> {
 /// Collect all processes (Linux): compute CPU% via /proc jiffies delta; sorting moved to client.
 #[cfg(target_os = "linux")]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    // Fresh view to avoid lingering entries and select "no tasks" (no per-thread rows).
-    let mut sys = System::new();
+    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000);
+    let ttl = StdDuration::from_millis(ttl_ms);
+    {
+        let cache = state.cache_processes.lock().await;
+        if cache.is_fresh(ttl) {
+            if let Some(v) = cache.take_clone() {
+                return v;
+            }
+        }
+    }
+    // Reuse shared System to avoid reallocation; refresh processes fully.
+    let mut sys_guard = state.sys.lock().await;
+    let sys = &mut *sys_guard;
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         false,
@@ -336,50 +388,70 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         })
         .collect();
 
-    ProcessesPayload {
+    let payload = ProcessesPayload {
         process_count: total_count,
         top_processes: procs,
+    };
+    {
+        let mut cache = state.cache_processes.lock().await;
+        cache.set(payload.clone());
     }
+    payload
 }
 
 /// Collect all processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     use tokio::time::sleep;
-
-    let mut sys = state.sys.lock().await;
-
-    // First refresh to set baseline
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        false,
-        ProcessRefreshKind::everything().without_tasks(),
-    );
-    // Small delay so sysinfo can compute CPU deltas on next refresh
+    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000);
+    let ttl = StdDuration::from_millis(ttl_ms);
+    {
+        let cache = state.cache_processes.lock().await;
+        if cache.is_fresh(ttl) {
+            if let Some(v) = cache.take_clone() {
+                return v;
+            }
+        }
+    }
+    {
+        let mut sys = state.sys.lock().await;
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            false,
+            ProcessRefreshKind::everything().without_tasks(),
+        );
+    }
+    // Release lock during sleep interval
     sleep(Duration::from_millis(250)).await;
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        false,
-        ProcessRefreshKind::everything().without_tasks(),
-    );
-
-    let total_count = sys.processes().len();
-
-    let procs: Vec<ProcessInfo> = sys
-        .processes()
-        .values()
-        .map(|p| ProcessInfo {
-            pid: p.pid().as_u32(),
-            name: p.name().to_string_lossy().into_owned(),
-            cpu_usage: p.cpu_usage(),
-            mem_bytes: p.memory(),
-        })
-        .collect();
-    ProcessesPayload {
-        process_count: total_count,
-        top_processes: procs,
+    {
+        let mut sys = state.sys.lock().await;
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            false,
+            ProcessRefreshKind::everything().without_tasks(),
+        );
+        let total_count = sys.processes().len();
+        let procs: Vec<ProcessInfo> = sys
+            .processes()
+            .values()
+            .map(|p| ProcessInfo {
+                pid: p.pid().as_u32(),
+                name: p.name().to_string_lossy().into_owned(),
+                cpu_usage: p.cpu_usage(),
+                mem_bytes: p.memory(),
+            })
+            .collect();
+        let payload = ProcessesPayload {
+            process_count: total_count,
+            top_processes: procs,
+        };
+        {
+            let mut cache = state.cache_processes.lock().await;
+            cache.set(payload.clone());
+        }
+        payload
     }
 }
-
-// Small helper to select and sort top-k by cpu
-// Client now handles sorting/pagination.
