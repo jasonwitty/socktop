@@ -5,7 +5,7 @@ socktop is a remote system monitor with a rich TUI, inspired by top/btop, talkin
 - Linux agent: near-zero CPU when idle (request-driven, no always-on sampler)
 - TUI: smooth graphs, sortable process table, scrollbars, readable colors
 
-![socktop screenshot](./docs/14900ks_arch_alacritty_gpu_active_v2.jpg)
+![socktop screenshot](./docs/socktop_demo.apng)
 
 ---
 
