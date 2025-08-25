@@ -124,19 +124,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
+
+    //support version flag (print and exit)
+    if env::args().any(|a| a == "--version" || a == "-V") {
+        println!("socktop {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
         return run_demo_mode(parsed.tls_ca.as_deref()).await;
     }
+
     if parsed.verify_hostname {
         // Set env var consumed by ws::connect logic
         std::env::set_var("SOCKTOP_VERIFY_NAME", "1");
     }
+
     let profiles_file = load_profiles();
     let req = ProfileRequest {
         profile_name: parsed.profile.clone(),
         url: parsed.url.clone(),
         tls_ca: parsed.tls_ca.clone(),
     };
+
     let resolved = req.resolve(&profiles_file);
     let mut profiles_mut = profiles_file.clone();
     let (url, tls_ca, metrics_interval_ms, processes_interval_ms): (
