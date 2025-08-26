@@ -17,16 +17,32 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
 // Optional normalization: divide per-process cpu_usage by logical core count so a fully
-// saturated multi-core process reports near 100% instead of N*100%. Enabled by default on
-// non-Linux (macOS/Windows) to counter per-core summing; disable with SOCKTOP_AGENT_NORMALIZE_CPU=0.
+// saturated multi-core process reports near 100% instead of N*100%. Disabled by default on
+// non-Linux because Activity Monitor / Task Manager semantics allow per-process >100% (multi-core).
+// Enable with SOCKTOP_AGENT_NORMALIZE_CPU=1 if you prefer a single-core 0..100% scale.
 #[cfg(not(target_os = "linux"))]
 fn normalize_cpu_enabled() -> bool {
     static ON: OnceCell<bool> = OnceCell::new();
     *ON.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_NORMALIZE_CPU")
             .map(|v| v != "0")
-            .unwrap_or(true)
+            .unwrap_or(false)
     })
+}
+// Smoothed scaling factor cache (non-Linux) to prevent jitter when reconciling
+// summed per-process CPU usage with global CPU usage.
+#[cfg(not(target_os = "linux"))]
+static SCALE_SMOOTH: OnceCell<Mutex<Option<f32>>> = OnceCell::new();
+
+#[cfg(not(target_os = "linux"))]
+fn smooth_scale_factor(target: f32) -> f32 {
+    let lock = SCALE_SMOOTH.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap();
+    let new = guard
+        .map(|prev| prev * 0.6 + target * 0.4)
+        .unwrap_or(target);
+    *guard = Some(new);
+    new
 }
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
@@ -313,7 +329,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1_000);
+        // Higher default (1500ms) on non-Linux to lower overhead while keeping responsiveness.
+        .unwrap_or(1_500);
     let ttl = StdDuration::from_millis(ttl_ms);
     {
         let cache = state.cache_processes.lock().await;
@@ -453,16 +470,14 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         sys.refresh_cpu_usage();
         let total_count = sys.processes().len();
         let norm = normalize_cpu_enabled();
-        let cores = if norm {
-            sys.cpus().len().max(1) as f32
-        } else {
-            1.0
-        };
+        let cores = sys.cpus().len().max(1) as f32;
         let mut list: Vec<ProcessInfo> = sys
             .processes()
             .values()
             .map(|p| {
                 let raw = p.cpu_usage();
+                // If normalization enabled: present 0..100% single-core scale.
+                // Else keep raw (which may exceed 100 on multi-core usage) for familiarity with OS tools.
                 let cpu = if norm {
                     (raw / cores).clamp(0.0, 100.0)
                 } else {
@@ -476,20 +491,22 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
-        // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
-        // CPU by >5%, scale all process CPU values proportionally so the sum matches global.
-        if std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
-            .map(|v| v != "0")
-            .unwrap_or(true)
+        // Global reconciliation (default ON) only when NOT using core normalization.
+        if !norm
+            && std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
+                .map(|v| v != "0")
+                .unwrap_or(true)
         {
             let sum: f32 = list.iter().map(|p| p.cpu_usage).sum();
             let global = sys.global_cpu_usage();
             if sum > 0.0 && global > 0.0 {
-                let scale = global / sum;
-                if scale < 0.95 {
-                    // only scale if we're at least 5% over
+                // target scale so that sum * scale ~= global
+                let target_scale = (global / sum).min(1.0);
+                // Only scale if we're more than 10% over.
+                if target_scale < 0.9 {
+                    let s = smooth_scale_factor(target_scale);
                     for p in &mut list {
-                        p.cpu_usage = (p.cpu_usage * scale).clamp(0.0, 100.0);
+                        p.cpu_usage = (p.cpu_usage * s).clamp(0.0, global.max(100.0));
                     }
                 }
             }

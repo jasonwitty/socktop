@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "socktop_agent"
-version = "1.40.2"
+version = "1.40.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
