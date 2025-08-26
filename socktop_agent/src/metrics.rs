@@ -444,11 +444,13 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Sleep briefly to allow cpu deltas to accumulate; 200-250ms is typical; we keep 200ms to lower agent overhead.
     sleep(Duration::from_millis(delay_ms.min(500))).await;
     // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
-    let (total_count, procs) = {
+    let (total_count, mut procs) = {
         let mut sys = state.sys.lock().await;
         // Build a lightweight refresh kind: only CPU times.
         let cpu_only = ProcessRefreshKind::nothing().with_cpu();
         sys.refresh_processes_specifics(ProcessesToUpdate::All, false, cpu_only);
+        // Refresh global CPU usage once for scaling heuristic
+        sys.refresh_cpu_usage();
         let total_count = sys.processes().len();
         let norm = normalize_cpu_enabled();
         let cores = if norm {
@@ -456,7 +458,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         } else {
             1.0
         };
-        let list: Vec<ProcessInfo> = sys
+        let mut list: Vec<ProcessInfo> = sys
             .processes()
             .values()
             .map(|p| {
@@ -474,6 +476,23 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
+        // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
+        // CPU by >25%, scale all process CPU values proportionally so the sum matches global.
+        if std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+        {
+            let sum: f32 = list.iter().map(|p| p.cpu_usage).sum();
+            let global = sys.global_cpu_usage();
+            if sum > 0.0 && global > 0.0 {
+                let scale = global / sum;
+                if scale < 0.75 { // only scale if we're at least 25% over
+                    for p in &mut list {
+                        p.cpu_usage = (p.cpu_usage * scale).clamp(0.0, 100.0);
+                    }
+                }
+            }
+        }
         (total_count, list)
     };
     let payload = ProcessesPayload {
