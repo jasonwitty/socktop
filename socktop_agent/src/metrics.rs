@@ -476,8 +476,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
-    // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
-    // CPU by >5%, scale all process CPU values proportionally so the sum matches global.
+        // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
+        // CPU by >5%, scale all process CPU values proportionally so the sum matches global.
         if std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
             .map(|v| v != "0")
             .unwrap_or(true)
@@ -486,8 +486,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             let global = sys.global_cpu_usage();
             if sum > 0.0 && global > 0.0 {
                 let scale = global / sum;
-        if scale < 0.95 {
-            // only scale if we're at least 5% over
+                if scale < 0.95 {
+                    // only scale if we're at least 5% over
                     for p in &mut list {
                         p.cpu_usage = (p.cpu_usage * scale).clamp(0.0, 100.0);
                     }

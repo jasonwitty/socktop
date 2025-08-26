@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
+# This repository uses a custom hooks directory (.githooks). To enable this pre-commit hook run:
+#   git config core.hooksPath .githooks
+# Ensure this file is executable: chmod +x .githooks/pre-commit
 set -euo pipefail
 
 echo "[pre-commit] Running cargo fmt --all" >&2
 
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "[pre-commit] cargo not found in PATH" >&2
-  exit 1
+  # Try loading rustup environment (common install path)
+  if [ -f "$HOME/.cargo/env" ]; then
+    # shellcheck source=/dev/null
+    . "$HOME/.cargo/env"
+  fi
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "[pre-commit] cargo not found in PATH; skipping fmt (install Rust or adjust PATH)." >&2
+  exit 0
 fi
 
 cargo fmt --all
