@@ -444,7 +444,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Sleep briefly to allow cpu deltas to accumulate; 200-250ms is typical; we keep 200ms to lower agent overhead.
     sleep(Duration::from_millis(delay_ms.min(500))).await;
     // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
-    let (total_count, mut procs) = {
+    let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
         // Build a lightweight refresh kind: only CPU times.
         let cpu_only = ProcessRefreshKind::nothing().with_cpu();
