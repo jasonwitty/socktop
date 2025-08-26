@@ -16,10 +16,7 @@ use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
-// Optional normalization: divide per-process cpu_usage by logical core count so a fully
-// saturated multi-core process reports near 100% instead of N*100%. Disabled by default on
-// non-Linux because Activity Monitor / Task Manager semantics allow per-process >100% (multi-core).
-// Enable with SOCKTOP_AGENT_NORMALIZE_CPU=1 if you prefer a single-core 0..100% scale.
+// CPU normalization only relevant for non-Linux (Linux path uses /proc deltas fixed to 0..100 per process)
 #[cfg(not(target_os = "linux"))]
 fn normalize_cpu_enabled() -> bool {
     static ON: OnceCell<bool> = OnceCell::new();
@@ -28,21 +25,6 @@ fn normalize_cpu_enabled() -> bool {
             .map(|v| v != "0")
             .unwrap_or(false)
     })
-}
-// Smoothed scaling factor cache (non-Linux) to prevent jitter when reconciling
-// summed per-process CPU usage with global CPU usage.
-#[cfg(not(target_os = "linux"))]
-static SCALE_SMOOTH: OnceCell<Mutex<Option<f32>>> = OnceCell::new();
-
-#[cfg(not(target_os = "linux"))]
-fn smooth_scale_factor(target: f32) -> f32 {
-    let lock = SCALE_SMOOTH.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().unwrap();
-    let new = guard
-        .map(|prev| prev * 0.6 + target * 0.4)
-        .unwrap_or(target);
-    *guard = Some(new);
-    new
 }
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
@@ -329,7 +311,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        // Higher default (1500ms) on non-Linux to lower overhead while keeping responsiveness.
+        // Higher default (1500ms) on non-Linux only; keep 1500 here for Linux correctness (more frequent updates).
         .unwrap_or(1_500);
     let ttl = StdDuration::from_millis(ttl_ms);
     {
@@ -435,7 +417,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1_000);
+        .unwrap_or(2_000);
     // Delay between the two refresh calls used to compute CPU% (ms). Smaller delay lowers
     // accuracy slightly but reduces overall CPU overhead. Default 180ms.
     let delay_ms: u64 = std::env::var("SOCKTOP_AGENT_PROC_CPU_DELAY_MS")
@@ -476,12 +458,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             .values()
             .map(|p| {
                 let raw = p.cpu_usage();
-                // If normalization enabled: present 0..100% single-core scale.
-                // Else keep raw (which may exceed 100 on multi-core usage) for familiarity with OS tools.
+                // sysinfo (non-Linux) returns aggregated CPU% fraction of total machine (0..100).
+                // Present multi-core semantics by multiplying by logical core count unless normalized.
                 let cpu = if norm {
-                    (raw / cores).clamp(0.0, 100.0)
+                    raw.clamp(0.0, 100.0)
                 } else {
-                    raw
+                    (raw * cores).clamp(0.0, 100.0 * cores)
                 };
                 ProcessInfo {
                     pid: p.pid().as_u32(),
@@ -491,26 +473,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
-        // Global reconciliation (default ON) only when NOT using core normalization.
-        if !norm
-            && std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
-                .map(|v| v != "0")
-                .unwrap_or(true)
-        {
-            let sum: f32 = list.iter().map(|p| p.cpu_usage).sum();
-            let global = sys.global_cpu_usage();
-            if sum > 0.0 && global > 0.0 {
-                // target scale so that sum * scale ~= global
-                let target_scale = (global / sum).min(1.0);
-                // Only scale if we're more than 10% over.
-                if target_scale < 0.9 {
-                    let s = smooth_scale_factor(target_scale);
-                    for p in &mut list {
-                        p.cpu_usage = (p.cpu_usage * s).clamp(0.0, global.max(100.0));
-                    }
-                }
-            }
-        }
+        // No scaling heuristic needed in multi-core mode; sums may exceed 100.
         (total_count, list)
     };
     let payload = ProcessesPayload {

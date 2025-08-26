@@ -29,8 +29,6 @@ fn arg_value(name: &str) -> Option<String> {
     None
 }
 
-// (tests moved to end of file to satisfy clippy::items_after_test_module)
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
