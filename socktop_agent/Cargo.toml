@@ -1,6 +1,6 @@
 [package]
 name = "socktop_agent"
-version = "1.40.3"
+version = "1.40.4"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Remote system monitor over WebSocket, TUI like top"
 edition = "2021"
