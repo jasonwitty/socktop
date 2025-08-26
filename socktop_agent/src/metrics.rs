@@ -17,15 +17,15 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
 // Optional normalization: divide per-process cpu_usage by logical core count so a fully
-// saturated multi-core process reports near 100% instead of N*100%. Enable via
-// SOCKTOP_AGENT_NORMALIZE_CPU=1. Default keeps raw sysinfo semantics.
+// saturated multi-core process reports near 100% instead of N*100%. Enabled by default on
+// non-Linux (macOS/Windows) to counter per-core summing; disable with SOCKTOP_AGENT_NORMALIZE_CPU=0.
 #[cfg(not(target_os = "linux"))]
 fn normalize_cpu_enabled() -> bool {
     static ON: OnceCell<bool> = OnceCell::new();
     *ON.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_NORMALIZE_CPU")
             .map(|v| v != "0")
-            .unwrap_or(false)
+            .unwrap_or(true)
     })
 }
 // Runtime toggles (read once)
@@ -476,8 +476,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
-        // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
-        // CPU by >25%, scale all process CPU values proportionally so the sum matches global.
+    // Automatic scaling (enabled by default): if sum of per-process CPU exceeds global
+    // CPU by >5%, scale all process CPU values proportionally so the sum matches global.
         if std::env::var("SOCKTOP_AGENT_SCALE_PROC_CPU")
             .map(|v| v != "0")
             .unwrap_or(true)
@@ -486,7 +486,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             let global = sys.global_cpu_usage();
             if sum > 0.0 && global > 0.0 {
                 let scale = global / sum;
-                if scale < 0.75 { // only scale if we're at least 25% over
+        if scale < 0.95 {
+            // only scale if we're at least 5% over
                     for p in &mut list {
                         p.cpu_usage = (p.cpu_usage * scale).clamp(0.0, 100.0);
                     }
