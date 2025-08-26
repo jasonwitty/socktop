@@ -16,6 +16,18 @@ use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
+// Optional normalization: divide per-process cpu_usage by logical core count so a fully
+// saturated multi-core process reports near 100% instead of N*100%. Enable via
+// SOCKTOP_AGENT_NORMALIZE_CPU=1. Default keeps raw sysinfo semantics.
+#[cfg(not(target_os = "linux"))]
+fn normalize_cpu_enabled() -> bool {
+    static ON: OnceCell<bool> = OnceCell::new();
+    *ON.get_or_init(|| {
+        std::env::var("SOCKTOP_AGENT_NORMALIZE_CPU")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
+}
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
     static ON: OnceCell<bool> = OnceCell::new();
@@ -429,9 +441,10 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     sleep(Duration::from_millis(200)).await;
     // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
     let (total_count, procs) = {
-        let mut sys = state.sys.lock().await;
-        let cpu_only = ProcessRefreshKind::new().with_cpu().without_tasks();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, cpu_only);
+    let mut sys = state.sys.lock().await;
+    // Build a lightweight refresh kind: only CPU times.
+    let cpu_only = ProcessRefreshKind::nothing().with_cpu();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, false, cpu_only);
         let total_count = sys.processes().len();
         let norm = normalize_cpu_enabled();
         let cores = if norm {
