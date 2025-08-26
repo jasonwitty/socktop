@@ -416,6 +416,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             }
         }
     }
+    // First refresh: everything (establish baseline including memory/name etc.)
     {
         let mut sys = state.sys.lock().await;
         sys.refresh_processes_specifics(
@@ -424,34 +425,47 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             ProcessRefreshKind::everything().without_tasks(),
         );
     }
-    // Release lock during sleep interval
-    sleep(Duration::from_millis(250)).await;
-    {
+    // Sleep briefly to allow cpu deltas to accumulate; 200-250ms is typical; we keep 200ms to lower agent overhead.
+    sleep(Duration::from_millis(200)).await;
+    // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
+    let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            false,
-            ProcessRefreshKind::everything().without_tasks(),
-        );
+        let cpu_only = ProcessRefreshKind::new().with_cpu().without_tasks();
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, cpu_only);
         let total_count = sys.processes().len();
-        let procs: Vec<ProcessInfo> = sys
+        let norm = normalize_cpu_enabled();
+        let cores = if norm {
+            sys.cpus().len().max(1) as f32
+        } else {
+            1.0
+        };
+        let list: Vec<ProcessInfo> = sys
             .processes()
             .values()
-            .map(|p| ProcessInfo {
-                pid: p.pid().as_u32(),
-                name: p.name().to_string_lossy().into_owned(),
-                cpu_usage: p.cpu_usage(),
-                mem_bytes: p.memory(),
+            .map(|p| {
+                let raw = p.cpu_usage();
+                let cpu = if norm {
+                    (raw / cores).clamp(0.0, 100.0)
+                } else {
+                    raw
+                };
+                ProcessInfo {
+                    pid: p.pid().as_u32(),
+                    name: p.name().to_string_lossy().into_owned(),
+                    cpu_usage: cpu,
+                    mem_bytes: p.memory(),
+                }
             })
             .collect();
-        let payload = ProcessesPayload {
-            process_count: total_count,
-            top_processes: procs,
-        };
-        {
-            let mut cache = state.cache_processes.lock().await;
-            cache.set(payload.clone());
-        }
-        payload
+        (total_count, list)
+    };
+    let payload = ProcessesPayload {
+        process_count: total_count,
+        top_processes: procs,
+    };
+    {
+        let mut cache = state.cache_processes.lock().await;
+        cache.set(payload.clone());
     }
+    payload
 }
