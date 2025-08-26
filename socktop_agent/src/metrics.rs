@@ -419,6 +419,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000);
+    // Delay between the two refresh calls used to compute CPU% (ms). Smaller delay lowers
+    // accuracy slightly but reduces overall CPU overhead. Default 180ms.
+    let delay_ms: u64 = std::env::var("SOCKTOP_AGENT_PROC_CPU_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(180);
     let ttl = StdDuration::from_millis(ttl_ms);
     {
         let cache = state.cache_processes.lock().await;
@@ -431,14 +437,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // First refresh: everything (establish baseline including memory/name etc.)
     {
         let mut sys = state.sys.lock().await;
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            false,
-            ProcessRefreshKind::everything().without_tasks(),
-        );
+        // Limit to CPU + memory for baseline (avoids gathering env/cwd/cmd each time)
+        let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
     }
     // Sleep briefly to allow cpu deltas to accumulate; 200-250ms is typical; we keep 200ms to lower agent overhead.
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(delay_ms.min(500))).await;
     // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
