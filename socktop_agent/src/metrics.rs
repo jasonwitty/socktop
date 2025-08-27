@@ -449,7 +449,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         if load > 5.0 {
             let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
             sys.refresh_processes_specifics(
-                ProcessesToUpdate::default().with_cpu_usage_higher_than(cpu_threshold),
+                ProcessesToUpdate::All,
                 false,
                 kind,
             );
