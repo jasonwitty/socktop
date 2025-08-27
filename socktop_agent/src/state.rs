@@ -1,6 +1,5 @@
 //! Shared agent state: sysinfo handles and hot JSON cache.
 
-#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;

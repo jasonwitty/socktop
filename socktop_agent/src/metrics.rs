@@ -404,6 +404,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 /// Collect all processes (non-Linux): optimized for reduced allocations and selective updates.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
+    // Get configurable CPU threshold
+    let cpu_threshold: f32 = std::env::var("SOCKTOP_AGENT_PROCESS_CPU_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.1); // Default to 0.1%
+
     // Adaptive TTL based on system load
     let sys_guard = state.sys.lock().await;
     let load = sys_guard.global_cpu_usage();
@@ -414,8 +420,10 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     } else {
         // Adaptive TTL: longer when system is idle
         if load < 10.0 {
-            4_000 // Light load
+            5_000 // Very light load
         } else if load < 30.0 {
+            3_000 // Light load
+        } else if load < 50.0 {
             2_000 // Medium load
         } else {
             1_000 // High load
@@ -436,14 +444,16 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Single efficient refresh: only update processes using significant CPU
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
-        let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
 
-        // Only refresh processes using >0.1% CPU
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::new().with_cpu_usage_higher_than(0.1),
-            false,
-            kind,
-        );
+        // Only do a deep refresh if system load is significant
+        if load > 5.0 {
+            let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::default().with_cpu_usage_higher_than(cpu_threshold),
+                false,
+                kind,
+            );
+        }
         sys.refresh_cpu_usage();
 
         let total_count = sys.processes().len();
@@ -455,7 +465,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         // Filter and collect processes with meaningful CPU usage
         for p in sys.processes().values() {
             let raw = p.cpu_usage();
-            if raw > 0.1 {
+            if raw > cpu_threshold {
                 // Skip negligible CPU users
                 let pid = p.pid().as_u32();
 
@@ -477,11 +487,22 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             }
         }
 
-        // Clean up old process names periodically
-        if total_count > proc_cache.names.len() + 100 {
+        // Clean up old process names cache when it grows too large
+        let cache_cleanup_threshold = std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100); // Default cleanup threshold
+
+        if total_count > proc_cache.names.len() + cache_cleanup_threshold {
+            let now = std::time::Instant::now();
             proc_cache
                 .names
                 .retain(|pid, _| sys.processes().contains_key(&sysinfo::Pid::from_u32(*pid)));
+            tracing::debug!(
+                "Cleaned up {} stale process names in {}ms",
+                proc_cache.names.capacity() - proc_cache.names.len(),
+                now.elapsed().as_millis()
+            );
         }
 
         (total_count, proc_cache.reusable_vec.clone())
