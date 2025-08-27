@@ -441,53 +441,73 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         }
     }
 
-    // Single efficient refresh: only update processes using significant CPU
+    // Single efficient refresh with optimized CPU collection
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
+        let kind = ProcessRefreshKind::nothing().with_memory();
 
-        // Only do a deep refresh if system load is significant
+        // Optimize refresh strategy based on system load
         if load > 5.0 {
-            let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
-            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
+            // For active systems, get accurate CPU metrics
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                false,
+                kind.with_cpu(),
+            );
+        } else {
+            // For idle systems, just get basic process info
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                false,
+                kind,
+            );
+            sys.refresh_cpu_usage();
         }
-        sys.refresh_cpu_usage();
 
         let total_count = sys.processes().len();
+        let cpu_count = sys.cpus().len() as f32;
 
         // Reuse allocations via process cache
         let mut proc_cache = state.proc_cache.lock().await;
         proc_cache.reusable_vec.clear();
 
-        // Filter and collect processes with meaningful CPU usage
+        // Collect all processes, will sort by CPU later
         for p in sys.processes().values() {
+            let pid = p.pid().as_u32();
+
+            // Reuse cached name if available
+            let name = if let Some(cached) = proc_cache.names.get(&pid) {
+                cached.clone()
+            } else {
+                let new_name = p.name().to_string_lossy().into_owned();
+                proc_cache.names.insert(pid, new_name.clone());
+                new_name
+            };
+
+            // Normalize CPU by core count (like Linux implementation)
             let raw = p.cpu_usage();
-            if raw > cpu_threshold {
-                // Skip negligible CPU users
-                let pid = p.pid().as_u32();
+            let normalized_cpu = (raw / cpu_count).clamp(0.0, 100.0);
 
-                // Reuse cached name if available
-                let name = if let Some(cached) = proc_cache.names.get(&pid) {
-                    cached.clone()
-                } else {
-                    let new_name = p.name().to_string_lossy().into_owned();
-                    proc_cache.names.insert(pid, new_name.clone());
-                    new_name
-                };
-
-                proc_cache.reusable_vec.push(ProcessInfo {
-                    pid,
-                    name,
-                    cpu_usage: raw.clamp(0.0, 100.0),
-                    mem_bytes: p.memory(),
-                });
-            }
+            proc_cache.reusable_vec.push(ProcessInfo {
+                pid,
+                name,
+                cpu_usage: normalized_cpu,
+                mem_bytes: p.memory(),
+            });
         }
+
+        // Sort by CPU usage
+        proc_cache.reusable_vec.sort_by(|a, b| {
+            b.cpu_usage
+                .partial_cmp(&a.cpu_usage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Clean up old process names cache when it grows too large
         let cache_cleanup_threshold = std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(100); // Default cleanup threshold
+            .unwrap_or(1000); // Default: most modern systems have 400-700 processes
 
         if total_count > proc_cache.names.len() + cache_cleanup_threshold {
             let now = std::time::Instant::now();
@@ -501,6 +521,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             );
         }
 
+        // Get all processes, but keep the original ordering by CPU usage
         (total_count, proc_cache.reusable_vec.clone())
     };
 

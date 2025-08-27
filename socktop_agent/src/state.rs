@@ -29,8 +29,8 @@ pub struct ProcessCache {
 impl Default for ProcessCache {
     fn default() -> Self {
         Self {
-            names: HashMap::with_capacity(256),
-            reusable_vec: Vec::with_capacity(256),
+            names: HashMap::with_capacity(1000), // Pre-allocate for typical modern system process count
+            reusable_vec: Vec::with_capacity(1000),
         }
     }
 }
