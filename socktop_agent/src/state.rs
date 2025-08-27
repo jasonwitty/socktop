@@ -20,6 +20,22 @@ pub struct ProcCpuTracker {
     pub last_per_pid: HashMap<u32, u64>,
 }
 
+#[cfg(not(target_os = "linux"))]
+pub struct ProcessCache {
+    pub names: HashMap<u32, String>,
+    pub reusable_vec: Vec<crate::types::ProcessInfo>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Default for ProcessCache {
+    fn default() -> Self {
+        Self {
+            names: HashMap::with_capacity(256),
+            reusable_vec: Vec::with_capacity(256),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub sys: SharedSystem,
@@ -31,6 +47,10 @@ pub struct AppState {
     // For correct per-process CPU% using /proc deltas (Linux only path uses this tracker)
     #[cfg(target_os = "linux")]
     pub proc_cpu: Arc<Mutex<ProcCpuTracker>>,
+
+    // Process name caching and vector reuse for non-Linux to reduce allocations
+    #[cfg(not(target_os = "linux"))]
+    pub proc_cache: Arc<Mutex<ProcessCache>>,
 
     // Connection tracking (to allow future idle sleeps if desired)
     pub client_count: Arc<AtomicUsize>,
@@ -89,6 +109,8 @@ impl AppState {
             hostname: System::host_name().unwrap_or_else(|| "unknown".into()),
             #[cfg(target_os = "linux")]
             proc_cpu: Arc::new(Mutex::new(ProcCpuTracker::default())),
+            #[cfg(not(target_os = "linux"))]
+            proc_cache: Arc::new(Mutex::new(ProcessCache::default())),
             client_count: Arc::new(AtomicUsize::new(0)),
             auth_token: std::env::var("SOCKTOP_TOKEN")
                 .ok()

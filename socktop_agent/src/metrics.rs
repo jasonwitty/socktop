@@ -16,16 +16,7 @@ use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 use tracing::warn;
 
-// CPU normalization only relevant for non-Linux (Linux path uses /proc deltas fixed to 0..100 per process)
-#[cfg(not(target_os = "linux"))]
-fn normalize_cpu_enabled() -> bool {
-    static ON: OnceCell<bool> = OnceCell::new();
-    *ON.get_or_init(|| {
-        std::env::var("SOCKTOP_AGENT_NORMALIZE_CPU")
-            .map(|v| v != "0")
-            .unwrap_or(false)
-    })
-}
+// NOTE: CPU normalization env removed; non-Linux now always reports per-process share (0..100) as given by sysinfo.
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
     static ON: OnceCell<bool> = OnceCell::new();
@@ -410,14 +401,28 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     payload
 }
 
-/// Collect all processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
+/// Collect all processes (non-Linux): optimized for reduced allocations and selective updates.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2_000);
+    // Adaptive TTL based on system load
+    let sys_guard = state.sys.lock().await;
+    let load = sys_guard.global_cpu_usage();
+    drop(sys_guard);
+
+    let ttl_ms: u64 = if let Ok(v) = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS") {
+        v.parse().unwrap_or(2_000)
+    } else {
+        // Adaptive TTL: longer when system is idle
+        if load < 10.0 {
+            4_000 // Light load
+        } else if load < 30.0 {
+            2_000 // Medium load
+        } else {
+            1_000 // High load
+        }
+    };
     let ttl = StdDuration::from_millis(ttl_ms);
+
     // Serve from cache if fresh
     {
         let cache = state.cache_processes.lock().await;
@@ -428,49 +433,65 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         }
     }
 
-    // Single refresh approach: rely on sysinfo's internal previous snapshot (so first call yields 0s, subsequent calls valid).
+    // Single efficient refresh: only update processes using significant CPU
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
         let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
-        sys.refresh_cpu_usage(); // update global so scaling comparison uses same interval
+
+        // Only refresh processes using >0.1% CPU
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::new().with_cpu_usage_higher_than(0.1),
+            false,
+            kind,
+        );
+        sys.refresh_cpu_usage();
 
         let total_count = sys.processes().len();
-        let norm = normalize_cpu_enabled();
-        let mut list: Vec<ProcessInfo> = sys
-            .processes()
-            .values()
-            .map(|p| {
-                let raw = p.cpu_usage();
-                // Treat raw as share of total machine (0..100). Normalization flag currently just clamps.
-                let cpu = if norm { raw.clamp(0.0, 100.0) } else { raw };
-                ProcessInfo {
-                    pid: p.pid().as_u32(),
-                    name: p.name().to_string_lossy().into_owned(),
-                    cpu_usage: cpu,
+
+        // Reuse allocations via process cache
+        let mut proc_cache = state.proc_cache.lock().await;
+        proc_cache.reusable_vec.clear();
+
+        // Filter and collect processes with meaningful CPU usage
+        for p in sys.processes().values() {
+            let raw = p.cpu_usage();
+            if raw > 0.1 {
+                // Skip negligible CPU users
+                let pid = p.pid().as_u32();
+
+                // Reuse cached name if available
+                let name = if let Some(cached) = proc_cache.names.get(&pid) {
+                    cached.clone()
+                } else {
+                    let new_name = p.name().to_string_lossy().into_owned();
+                    proc_cache.names.insert(pid, new_name.clone());
+                    new_name
+                };
+
+                proc_cache.reusable_vec.push(ProcessInfo {
+                    pid,
+                    name,
+                    cpu_usage: raw.clamp(0.0, 100.0),
                     mem_bytes: p.memory(),
-                }
-            })
-            .collect();
-        // Optional global reconciliation: align sum of per-process CPU with global if significantly off (e.g. factor >1.2 or <0.8)
-        let sum: f32 = list.iter().map(|p| p.cpu_usage).sum();
-        let global = sys.global_cpu_usage();
-        if sum > 0.0 && global > 0.0 {
-            let ratio = global / sum; // if <1, we are over-summing; if >1 under-summing
-            if ratio < 0.8 || ratio > 1.2 {
-                // scale gently toward global but not fully (to reduce jitter)
-                let adj = (ratio * 0.5) + 0.5; // halfway to target
-                for p in &mut list {
-                    p.cpu_usage = (p.cpu_usage * adj).clamp(0.0, 100.0);
-                }
+                });
             }
         }
-        (total_count, list)
+
+        // Clean up old process names periodically
+        if total_count > proc_cache.names.len() + 100 {
+            proc_cache
+                .names
+                .retain(|pid, _| sys.processes().contains_key(&sysinfo::Pid::from_u32(*pid)));
+        }
+
+        (total_count, proc_cache.reusable_vec.clone())
     };
+
     let payload = ProcessesPayload {
         process_count: total_count,
         top_processes: procs,
     };
+
     {
         let mut cache = state.cache_processes.lock().await;
         cache.set(payload.clone());
