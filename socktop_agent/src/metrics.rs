@@ -413,18 +413,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 /// Collect all processes (non-Linux): use sysinfo's internal CPU% by doing a double refresh.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    use tokio::time::sleep;
     let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2_000);
-    // Delay between the two refresh calls used to compute CPU% (ms). Smaller delay lowers
-    // accuracy slightly but reduces overall CPU overhead. Default 180ms.
-    let delay_ms: u64 = std::env::var("SOCKTOP_AGENT_PROC_CPU_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(180);
     let ttl = StdDuration::from_millis(ttl_ms);
+    // Serve from cache if fresh
     {
         let cache = state.cache_processes.lock().await;
         if cache.is_fresh(ttl) {
@@ -433,38 +427,23 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             }
         }
     }
-    // First refresh: everything (establish baseline including memory/name etc.)
-    {
-        let mut sys = state.sys.lock().await;
-        // Limit to CPU + memory for baseline (avoids gathering env/cwd/cmd each time)
-        let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
-    }
-    // Sleep briefly to allow cpu deltas to accumulate; 200-250ms is typical; we keep 200ms to lower agent overhead.
-    sleep(Duration::from_millis(delay_ms.min(500))).await;
-    // Second refresh: only CPU counters (lighter than full everything) to reduce overhead.
+
+    // Single refresh approach: rely on sysinfo's internal previous snapshot (so first call yields 0s, subsequent calls valid).
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
-        // Build a lightweight refresh kind: only CPU times.
-        let cpu_only = ProcessRefreshKind::nothing().with_cpu();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, cpu_only);
-        // Refresh global CPU usage once for scaling heuristic
-        sys.refresh_cpu_usage();
+        let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
+        sys.refresh_cpu_usage(); // update global so scaling comparison uses same interval
+
         let total_count = sys.processes().len();
         let norm = normalize_cpu_enabled();
-        let cores = sys.cpus().len().max(1) as f32;
         let mut list: Vec<ProcessInfo> = sys
             .processes()
             .values()
             .map(|p| {
                 let raw = p.cpu_usage();
-                // sysinfo (non-Linux) returns aggregated CPU% fraction of total machine (0..100).
-                // Present multi-core semantics by multiplying by logical core count unless normalized.
-                let cpu = if norm {
-                    raw.clamp(0.0, 100.0)
-                } else {
-                    (raw * cores).clamp(0.0, 100.0 * cores)
-                };
+                // Treat raw as share of total machine (0..100). Normalization flag currently just clamps.
+                let cpu = if norm { raw.clamp(0.0, 100.0) } else { raw };
                 ProcessInfo {
                     pid: p.pid().as_u32(),
                     name: p.name().to_string_lossy().into_owned(),
@@ -473,7 +452,19 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 }
             })
             .collect();
-        // No scaling heuristic needed in multi-core mode; sums may exceed 100.
+        // Optional global reconciliation: align sum of per-process CPU with global if significantly off (e.g. factor >1.2 or <0.8)
+        let sum: f32 = list.iter().map(|p| p.cpu_usage).sum();
+        let global = sys.global_cpu_usage();
+        if sum > 0.0 && global > 0.0 {
+            let ratio = global / sum; // if <1, we are over-summing; if >1 under-summing
+            if ratio < 0.8 || ratio > 1.2 {
+                // scale gently toward global but not fully (to reduce jitter)
+                let adj = (ratio * 0.5) + 0.5; // halfway to target
+                for p in &mut list {
+                    p.cpu_usage = (p.cpu_usage * adj).clamp(0.0, 100.0);
+                }
+            }
+        }
         (total_count, list)
     };
     let payload = ProcessesPayload {
