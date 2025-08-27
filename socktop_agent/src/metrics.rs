@@ -448,11 +448,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         // Only do a deep refresh if system load is significant
         if load > 5.0 {
             let kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
-            sys.refresh_processes_specifics(
-                ProcessesToUpdate::All,
-                false,
-                kind,
-            );
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
         }
         sys.refresh_cpu_usage();
 
