@@ -449,18 +449,10 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         // Optimize refresh strategy based on system load
         if load > 5.0 {
             // For active systems, get accurate CPU metrics
-            sys.refresh_processes_specifics(
-                ProcessesToUpdate::All,
-                false,
-                kind.with_cpu(),
-            );
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind.with_cpu());
         } else {
             // For idle systems, just get basic process info
-            sys.refresh_processes_specifics(
-                ProcessesToUpdate::All,
-                false,
-                kind,
-            );
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
             sys.refresh_cpu_usage();
         }
 
