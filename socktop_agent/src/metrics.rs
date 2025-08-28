@@ -418,24 +418,6 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Single efficient refresh with optimized CPU collection
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
-        // Get load first for TTL calculation
-        let load = sys.global_cpu_usage();
-
-        // Adaptive TTL based on system load - will be used for next cache cycle
-        let ttl_ms: u64 = if let Ok(v) = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS") {
-            v.parse().unwrap_or(2_000)
-        } else {
-            // Adaptive TTL: longer when system is idle
-            if load < 10.0 {
-                5_000 // Very light load
-            } else if load < 30.0 {
-                3_000 // Light load
-            } else if load < 50.0 {
-                2_000 // Medium load
-            } else {
-                1_000 // High load
-            }
-        };
         let kind = ProcessRefreshKind::nothing().with_memory();
 
         // Optimize refresh strategy based on system load
