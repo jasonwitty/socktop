@@ -454,14 +454,15 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
                 new_name
             };
 
-            // Normalize CPU by core count (like Linux implementation)
-            let raw = p.cpu_usage();
-            let normalized_cpu = (raw / cpu_count).clamp(0.0, 100.0);
+            // Convert to percentage of total CPU capacity
+            // e.g., 100% on 2 cores of 8 core system = 25% total CPU
+            let raw = p.cpu_usage(); // This is per-core percentage
+            let total_cpu = raw.clamp(0.0, 100.0) / cpu_count;
 
             proc_cache.reusable_vec.push(ProcessInfo {
                 pid,
                 name,
-                cpu_usage: normalized_cpu,
+                cpu_usage: total_cpu,
                 mem_bytes: p.memory(),
             });
         }
