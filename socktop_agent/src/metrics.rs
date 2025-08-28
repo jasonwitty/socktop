@@ -404,12 +404,6 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 /// Collect all processes (non-Linux): optimized for reduced allocations and selective updates.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    // Get configurable CPU threshold
-    let cpu_threshold: f32 = std::env::var("SOCKTOP_AGENT_PROCESS_CPU_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.1); // Default to 0.1%
-
     // Adaptive TTL based on system load
     let sys_guard = state.sys.lock().await;
     let load = sys_guard.global_cpu_usage();
