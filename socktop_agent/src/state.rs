@@ -85,11 +85,8 @@ impl<T> CacheEntry<T> {
         self.value = Some(v);
         self.at = Some(Instant::now());
     }
-    pub fn take_clone(&self) -> Option<T>
-    where
-        T: Clone,
-    {
-        self.value.clone()
+    pub fn get(&self) -> Option<&T> {
+        self.value.as_ref()
     }
 }
 

@@ -108,8 +108,8 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
     {
         let cache = state.cache_metrics.lock().await;
         if cache.is_fresh(ttl) {
-            if let Some(c) = cache.take_clone() {
-                return c;
+            if let Some(c) = cache.get() {
+                return c.clone();
             }
         }
     }
@@ -239,8 +239,8 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
     {
         let cache = state.cache_disks.lock().await;
         if cache.is_fresh(ttl) {
-            if let Some(v) = cache.take_clone() {
-                return v;
+            if let Some(v) = cache.get() {
+                return v.clone();
             }
         }
     }
@@ -308,8 +308,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     {
         let cache = state.cache_processes.lock().await;
         if cache.is_fresh(ttl) {
-            if let Some(v) = cache.take_clone() {
-                return v;
+            if let Some(c) = cache.get() {
+                return c.clone();
             }
         }
     }
@@ -404,33 +404,13 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 /// Collect all processes (non-Linux): optimized for reduced allocations and selective updates.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    // Adaptive TTL based on system load
-    let sys_guard = state.sys.lock().await;
-    let load = sys_guard.global_cpu_usage();
-    drop(sys_guard);
-
-    let ttl_ms: u64 = if let Ok(v) = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS") {
-        v.parse().unwrap_or(2_000)
-    } else {
-        // Adaptive TTL: longer when system is idle
-        if load < 10.0 {
-            5_000 // Very light load
-        } else if load < 30.0 {
-            3_000 // Light load
-        } else if load < 50.0 {
-            2_000 // Medium load
-        } else {
-            1_000 // High load
-        }
-    };
-    let ttl = StdDuration::from_millis(ttl_ms);
-
     // Serve from cache if fresh
     {
         let cache = state.cache_processes.lock().await;
-        if cache.is_fresh(ttl) {
-            if let Some(v) = cache.take_clone() {
-                return v;
+        if cache.is_fresh(StdDuration::from_millis(2_000)) {
+            // Use fixed TTL for cache check
+            if let Some(c) = cache.get() {
+                return c.clone();
             }
         }
     }
@@ -438,17 +418,39 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // Single efficient refresh with optimized CPU collection
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
+        // Get load first for TTL calculation
+        let load = sys.global_cpu_usage();
+
+        // Adaptive TTL based on system load - will be used for next cache cycle
+        let ttl_ms: u64 = if let Ok(v) = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS") {
+            v.parse().unwrap_or(2_000)
+        } else {
+            // Adaptive TTL: longer when system is idle
+            if load < 10.0 {
+                5_000 // Very light load
+            } else if load < 30.0 {
+                3_000 // Light load
+            } else if load < 50.0 {
+                2_000 // Medium load
+            } else {
+                1_000 // High load
+            }
+        };
         let kind = ProcessRefreshKind::nothing().with_memory();
 
         // Optimize refresh strategy based on system load
-        if load > 5.0 {
-            // For active systems, get accurate CPU metrics
-            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind.with_cpu());
-        } else {
-            // For idle systems, just get basic process info
-            sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
-            sys.refresh_cpu_usage();
-        }
+        //if load > 5.0 {
+
+        //JW too complicated. simplify to remove strange behavior
+
+        // For active systems, get accurate CPU metrics
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind.with_cpu());
+
+        // } else {
+        //     // For idle systems, just get basic process info
+        //     sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind);
+        //     sys.refresh_cpu_usage();
+        // }
 
         let total_count = sys.processes().len();
         let cpu_count = sys.cpus().len() as f32;
@@ -482,12 +484,14 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             });
         }
 
-        // Sort by CPU usage
-        proc_cache.reusable_vec.sort_by(|a, b| {
-            b.cpu_usage
-                .partial_cmp(&a.cpu_usage)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        //JW no need to sort here; client does the sorting
+
+        // // Sort by CPU usage
+        // proc_cache.reusable_vec.sort_by(|a, b| {
+        //     b.cpu_usage
+        //         .partial_cmp(&a.cpu_usage)
+        //         .unwrap_or(std::cmp::Ordering::Equal)
+        // });
 
         // Clean up old process names cache when it grows too large
         let cache_cleanup_threshold = std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
@@ -507,8 +511,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             );
         }
 
-        // Get all processes, but keep the original ordering by CPU usage
-        (total_count, proc_cache.reusable_vec.clone())
+        // Get all processes, take ownership of the vec (will be replaced with empty vec)
+        (total_count, std::mem::take(&mut proc_cache.reusable_vec))
     };
 
     let payload = ProcessesPayload {
