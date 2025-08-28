@@ -1,6 +1,6 @@
 [package]
 name = "socktop_agent"
-version = "1.40.66"
+version = "1.40.67"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Remote system monitor over WebSocket, TUI like top"
 edition = "2021"
@@ -36,3 +36,4 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 assert_cmd = "2.0"
 tempfile = "3.10"
+tokio-tungstenite = "0.21"

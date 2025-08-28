@@ -49,6 +49,15 @@ struct GpuCache {
 }
 static GPUC: OnceCell<Mutex<GpuCache>> = OnceCell::new();
 
+// Static caches for unchanging data
+static HOSTNAME: OnceCell<String> = OnceCell::new();
+struct NetworkNameCache {
+    names: Vec<String>,
+    infos: Vec<NetworkInfo>,
+}
+static NETWORK_CACHE: OnceCell<Mutex<NetworkNameCache>> = OnceCell::new();
+static CPU_VEC: OnceCell<Mutex<Vec<f32>>> = OnceCell::new();
+
 fn cached_temp() -> Option<f32> {
     if !temp_enabled() {
         return None;
@@ -121,9 +130,19 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         warn!("sysinfo selective refresh panicked: {e:?}");
     }
 
-    let hostname = state.hostname.clone();
+    // Get or initialize hostname once
+    let hostname = HOSTNAME.get_or_init(|| state.hostname.clone()).clone();
+
+    // Reuse CPU vector to avoid allocation
     let cpu_total = sys.global_cpu_usage();
-    let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+    let cpu_per_core = {
+        let vec_lock = CPU_VEC.get_or_init(|| Mutex::new(Vec::with_capacity(32)));
+        let mut vec = vec_lock.lock().unwrap();
+        vec.clear();
+        vec.extend(sys.cpus().iter().map(|c| c.cpu_usage()));
+        vec.clone() // Still need to clone but the allocation is reused
+    };
+
     let mem_total = sys.total_memory();
     let mem_used = mem_total.saturating_sub(sys.available_memory());
     let swap_total = sys.total_swap();
@@ -156,17 +175,38 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         None
     };
 
-    // Networks
-    let networks: Vec<NetworkInfo> = {
+    // Networks with reusable name cache
+    let networks = {
         let mut nets = state.networks.lock().await;
         nets.refresh(false);
-        nets.iter()
-            .map(|(name, data)| NetworkInfo {
-                name: name.to_string(),
+
+        // Get or initialize network cache
+        let cache = NETWORK_CACHE.get_or_init(|| {
+            Mutex::new(NetworkNameCache {
+                names: Vec::new(),
+                infos: Vec::with_capacity(4), // Most systems have few network interfaces
+            })
+        });
+        let mut cache = cache.lock().unwrap();
+
+        // Collect current network names
+        let current_names: Vec<_> = nets.keys().map(|name| name.to_string()).collect();
+
+        // Update cached network names if they changed
+        if cache.names != current_names {
+            cache.names = current_names;
+        }
+
+        // Reuse NetworkInfo objects
+        cache.infos.clear();
+        for (name, data) in nets.iter() {
+            cache.infos.push(NetworkInfo {
+                name: name.to_string(), // We'll still clone but avoid Vec reallocation
                 received: data.total_received(),
                 transmitted: data.total_transmitted(),
-            })
-            .collect()
+            });
+        }
+        cache.infos.clone()
     };
 
     // GPUs: if we already determined none exist, short-circuit (no repeated probing)
