@@ -60,6 +60,8 @@ sudo apt-get update
 sudo apt-get install libdrm-dev libdrm-amdgpu1
 ```
 
+_Additional note for Raspberry Pi users. Please update your system to use the newest kernel available through app, kernel version 6.6+ will use considerably less overall CPU to run the agent. For example on a rpi4 the kernel < 6.6 the agent will consume .8 cpu but on the same hardware on > 6.6 the agent will consume only .2 cpu. (these numbers indicate continuous polling at web socket endpoints, when not in use the usage is 0)_
+
 ---
 
 ## Architecture
