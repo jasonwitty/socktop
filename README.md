@@ -94,6 +94,12 @@ cargo build --release
 ./target/release/socktop ws://REMOTE_HOST:3000/ws
 ```
 
+### Cross-compiling for Raspberry Pi
+
+For Raspberry Pi and other ARM devices, you can cross-compile the agent from a more powerful machine:
+
+- [Cross-compilation guide](./docs/cross-compiling.md) - Instructions for cross-compiling from Linux, macOS, or Windows hosts
+
 ### Quick demo (no agent setup)
 
 Spin up a temporary local agent on port 3231 and connect automatically:
