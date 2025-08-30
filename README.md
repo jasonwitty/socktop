@@ -533,10 +533,13 @@ Every commit will then format Rust sources and restage them automatically.
 - [x] Agent authentication (token)
 - [x] Hide per-thread entries; only show processes
 - [x] Sort top processes in the TUI
-- [ ] Configurable refresh intervals (client)
+- [x] Configurable refresh intervals (client)
 - [ ] Export metrics to file
 - [x] TLS / WSS support (self‑signed server cert + client pinning)
 - [x] Split processes/disks to separate WS calls with independent cadences (already logical on client; formalize API)
+- [ ] Outage notifications and reconnect.
+- [ ] Per process detailed statistics pane
+- [ ] cleanup of Disks section, properly display physical disks / partitions, remove duplicate entries
 
 ---
 
