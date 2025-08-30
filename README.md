@@ -60,6 +60,8 @@ sudo apt-get update
 sudo apt-get install libdrm-dev libdrm-amdgpu1
 ```
 
+_Additional note for Raspberry Pi users. Please update your system to use the newest kernel available through app, kernel version 6.6+ will use considerably less overall CPU to run the agent. For example on a rpi4 the kernel < 6.6 the agent will consume .8 cpu but on the same hardware on > 6.6 the agent will consume only .2 cpu. (these numbers indicate continuous polling at web socket endpoints, when not in use the usage is 0)_
+
 ---
 
 ## Architecture
@@ -93,6 +95,12 @@ cargo build --release
 ```bash
 ./target/release/socktop ws://REMOTE_HOST:3000/ws
 ```
+
+### Cross-compiling for Raspberry Pi
+
+For Raspberry Pi and other ARM devices, you can cross-compile the agent from a more powerful machine:
+
+- [Cross-compilation guide](./docs/cross-compiling.md) - Instructions for cross-compiling from Linux, macOS, or Windows hosts
 
 ### Quick demo (no agent setup)
 
@@ -525,10 +533,13 @@ Every commit will then format Rust sources and restage them automatically.
 - [x] Agent authentication (token)
 - [x] Hide per-thread entries; only show processes
 - [x] Sort top processes in the TUI
-- [ ] Configurable refresh intervals (client)
+- [x] Configurable refresh intervals (client)
 - [ ] Export metrics to file
 - [x] TLS / WSS support (self‑signed server cert + client pinning)
 - [x] Split processes/disks to separate WS calls with independent cadences (already logical on client; formalize API)
+- [ ] Outage notifications and reconnect.
+- [ ] Per process detailed statistics pane
+- [ ] cleanup of Disks section, properly display physical disks / partitions, remove duplicate entries
 
 ---
 
