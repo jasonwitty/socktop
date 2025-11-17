@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+#[cfg(feature = "logging")]
 use tracing::warn;
 
 // NOTE: CPU normalization env removed; non-Linux now always reports per-process share (0..100) as given by sysinfo.
@@ -168,11 +169,12 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         }
     }
     let mut sys = state.sys.lock().await;
-    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Err(_e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
     })) {
-        warn!("sysinfo selective refresh panicked: {e:?}");
+        #[cfg(feature = "logging")]
+        warn!("sysinfo selective refresh panicked: {_e:?}");
     }
 
     // Get or initialize hostname once
@@ -266,8 +268,9 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
             let v = match collect_all_gpus() {
                 Ok(v) if !v.is_empty() => Some(v),
                 Ok(_) => None,
-                Err(e) => {
-                    warn!("gpu collection failed: {e}");
+                Err(_e) => {
+                    #[cfg(feature = "logging")]
+                    warn!("gpu collection failed: {_e}");
                     None
                 }
             };
@@ -348,6 +351,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
             if label.contains("composite")
                 && let Some(temp) = c.temperature()
             {
+                #[cfg(feature = "logging")]
                 tracing::debug!("Found Composite temp: {}°C", temp);
                 composite_temps.push(temp);
             }
@@ -357,9 +361,11 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
         let mut temps = std::collections::HashMap::new();
         for (idx, temp) in composite_temps.iter().enumerate() {
             let key = format!("nvme{}n1", idx);
+            #[cfg(feature = "logging")]
             tracing::debug!("Mapping {} -> {}°C", key, temp);
             temps.insert(key, *temp);
         }
+        #[cfg(feature = "logging")]
         tracing::debug!("Final disk_temps map: {:?}", temps);
         temps
     };
@@ -394,6 +400,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
             // Try to find temperature for this disk
             let temperature = disk_temps.iter().find_map(|(key, &temp)| {
                 if name.starts_with(key) {
+                    #[cfg(feature = "logging")]
                     tracing::debug!("Matched {} with key {} -> {}°C", name, key, temp);
                     Some(temp)
                 } else {
@@ -402,6 +409,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
             });
 
             if temperature.is_none() && !name.starts_with("loop") && !name.starts_with("ram") {
+                #[cfg(feature = "logging")]
                 tracing::debug!("No temperature found for disk: {}", name);
             }
 
@@ -752,6 +760,7 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             proc_cache
                 .names
                 .retain(|pid, _| sys.processes().contains_key(&sysinfo::Pid::from_u32(*pid)));
+            #[cfg(feature = "logging")]
             tracing::debug!(
                 "Cleaned up {} stale process names in {}ms",
                 proc_cache.names.capacity() - proc_cache.names.len(),

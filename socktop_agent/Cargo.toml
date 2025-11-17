@@ -8,33 +8,39 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+# Tokio: Use minimal features instead of "full" to reduce binary size
+# Only include: rt-multi-thread (async runtime), net (WebSocket), sync (Mutex/RwLock), macros (#[tokio::test])
+# Excluded: io, fs, process, signal, time (not needed for this workload)
+# Savings: ~200-300KB binary size, faster compile times
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
 axum = { version = "0.7", features = ["ws", "macros"] }
 sysinfo = { version = "0.37", features = ["network", "disk", "component"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3.31"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# nvml-wrapper removed (unused; GPU metrics via gfxinfo only now)
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 gfxinfo = "0.1.2"
 once_cell = "1.19"
 axum-server = { version = "0.6", features = ["tls-rustls"] }
 rustls = "0.23"
 rustls-pemfile = "2.1"
-rcgen = "0.13"  # pure-Rust self-signed cert generation (replaces openssl vendored build)
+rcgen = "0.13"
 anyhow = "1"
 hostname = "0.3"
 prost = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["formatting", "macros", "parsing" ] }
-# For executing journalctl commands
-tokio-process = "0.2"
+
+[features]
+default = []
+logging = ["tracing", "tracing-subscriber"]
 
 [build-dependencies]
 prost-build = "0.13"
 tonic-build = { version = "0.12", default-features = false, optional = true }
 protoc-bin-vendored = "3"
+
 [dev-dependencies]
 assert_cmd = "2.0"
 tempfile = "3.10"

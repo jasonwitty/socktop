@@ -29,10 +29,47 @@ fn arg_value(name: &str) -> Option<String> {
     None
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "logging")]
     tracing_subscriber::fmt::init();
 
+    // Configure Tokio runtime with optimized thread pool for reduced overhead.
+    //
+    // The agent is primarily I/O-bound (WebSocket, /proc file reads, sysinfo)
+    // with no CPU-intensive or blocking operations, so a smaller thread pool
+    // is beneficial:
+    //
+    // Benefits:
+    //   - Lower memory footprint (~1-2MB per thread saved)
+    //   - Reduced context switching overhead
+    //   - Fewer idle threads consuming resources
+    //   - Better for resource-constrained systems
+    //
+    // Trade-offs:
+    //   - Slightly reduced throughput under very high concurrent connections
+    //   - Could introduce latency if blocking operations are added (don't do this!)
+    //
+    // Default: 2 threads (sufficient for typical workloads with 1-10 clients)
+    // Override: Set SOCKTOP_WORKER_THREADS=4 to use more threads if needed
+    //
+    // Note: Default Tokio uses num_cpus threads which is excessive for this workload.
+
+    let worker_threads = std::env::var("SOCKTOP_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 16); // Ensure 1-16 threads
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .thread_name("socktop-agent")
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     // Version flag (print and exit). Keep before heavy initialization.
     if arg_flag("--version") || arg_flag("-V") {
         println!("socktop_agent {}", env!("CARGO_PKG_VERSION"));
