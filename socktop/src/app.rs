@@ -29,13 +29,14 @@ use crate::ui::cpu::{
 };
 use crate::ui::modal::{ModalAction, ModalManager, ModalType};
 use crate::ui::processes::{
-    ProcSortBy, ProcessKeyParams, processes_handle_key_with_selection,
+    ProcSortBy, ProcessKeyParams, get_filtered_sorted_indices, processes_handle_key_with_selection,
     processes_handle_mouse_with_selection,
 };
 use crate::ui::{
     disks::draw_disks, gpu::draw_gpu, header::draw_header, mem::draw_mem, net::draw_net_spark,
     swap::draw_swap,
 };
+
 use socktop_connector::{
     AgentRequest, AgentResponse, SocktopConnector, connect_to_socktop_agent,
     connect_to_socktop_agent_with_tls,
@@ -84,6 +85,10 @@ pub struct App {
     pub selected_process_index: Option<usize>, // Index in the visible/sorted list
     prev_selected_process_pid: Option<u32>,    // Track previous selection to detect changes
 
+    // Process search state
+    pub process_search_active: bool,
+    pub process_search_query: String,
+
     last_procs_poll: Instant,
     last_disks_poll: Instant,
     procs_interval: Duration,
@@ -99,7 +104,8 @@ pub struct App {
     pub process_io_write_history: VecDeque<u64>, // Disk write DELTA history in bytes (last 60 samples)
     last_io_read_bytes: Option<u64>,             // Previous read bytes for delta calculation
     last_io_write_bytes: Option<u64>,            // Previous write bytes for delta calculation
-    pub process_details_unsupported: bool,       // Track if agent doesn't support process details
+    pub max_process_mem_bytes: u64, // Maximum memory usage observed for current process
+    pub process_details_unsupported: bool, // Track if agent doesn't support process details
     last_process_details_poll: Instant,
     last_journal_poll: Instant,
     process_details_interval: Duration,
@@ -146,6 +152,8 @@ impl App {
             selected_process_pid: None,
             selected_process_index: None,
             prev_selected_process_pid: None,
+            process_search_active: false,
+            process_search_query: String::new(),
             last_procs_poll: Instant::now()
                 .checked_sub(Duration::from_secs(2))
                 .unwrap_or_else(Instant::now), // trigger immediately on first loop
@@ -163,6 +171,7 @@ impl App {
             process_io_write_history: VecDeque::with_capacity(600),
             last_io_read_bytes: None,
             last_io_write_bytes: None,
+            max_process_mem_bytes: 0,
             process_details_unsupported: false,
             last_process_details_poll: Instant::now()
                 .checked_sub(Duration::from_secs(10))
@@ -649,12 +658,77 @@ impl App {
                             }
                         }
 
+                        // Handle search mode
+                        if self.process_search_active {
+                            match k.code {
+                                KeyCode::Esc => {
+                                    // Exit search mode
+                                    self.process_search_active = false;
+                                    self.process_search_query.clear();
+                                    continue;
+                                }
+                                KeyCode::Enter => {
+                                    // Exit search mode, keep filter active, and auto-select first result
+                                    self.process_search_active = false;
+
+                                    // Auto-select first filtered result
+                                    if let Some(m) = self.last_metrics.as_ref() {
+                                        let idxs = get_filtered_sorted_indices(
+                                            m,
+                                            &self.process_search_query,
+                                            self.procs_sort_by,
+                                        );
+                                        if !idxs.is_empty() {
+                                            let first_idx = idxs[0];
+                                            self.selected_process_index = Some(first_idx);
+                                            self.selected_process_pid =
+                                                Some(m.top_processes[first_idx].pid);
+                                        }
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Backspace => {
+                                    self.process_search_query.pop();
+                                    continue;
+                                }
+                                KeyCode::Char(c) => {
+                                    self.process_search_query.push(c);
+                                    continue;
+                                }
+                                KeyCode::Up | KeyCode::Down => {
+                                    // Allow arrow keys to navigate even while in search mode
+                                    // Fall through to normal navigation handling
+                                }
+                                _ => {
+                                    continue; // Block other keys in search mode
+                                }
+                            }
+                        }
+
                         // Normal key handling (only if no modal is active or modal didn't consume the key)
                         if matches!(
                             k.code,
                             KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
                         ) {
                             self.should_quit = true;
+                        }
+
+                        // Activate search mode on '/' (clears query if starting new search, or edits existing)
+                        if matches!(k.code, KeyCode::Char('/')) {
+                            self.process_search_active = true;
+                            // Don't clear query - allow editing existing search
+                            continue;
+                        }
+
+                        // Clear search filter on 'c' or 'C' (when not in search mode)
+                        if matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                            && !self.process_search_query.is_empty()
+                            && !self.process_search_active
+                        {
+                            self.process_search_query.clear();
+                            self.selected_process_pid = None;
+                            self.selected_process_index = None;
+                            continue;
                         }
 
                         // Show About modal on 'a' or 'A'
@@ -694,6 +768,7 @@ impl App {
                                 key: k,
                                 metrics: self.last_metrics.as_ref(),
                                 sort_by: self.procs_sort_by,
+                                search_query: &self.process_search_query,
                             })
                         } else {
                             false
@@ -711,41 +786,39 @@ impl App {
                         // Auto-scroll to keep selected process visible
                         if let (Some(selected_idx), Some(p_area)) =
                             (self.selected_process_index, self.last_procs_area)
+                            && let Some(m) = self.last_metrics.as_ref()
                         {
-                            // Calculate viewport size (excluding borders and header)
-                            let viewport_rows = p_area.height.saturating_sub(3) as usize; // borders (2) + header (1)
+                            // Get filtered and sorted indices (same as display)
+                            let idxs = get_filtered_sorted_indices(
+                                m,
+                                &self.process_search_query,
+                                self.procs_sort_by,
+                            );
 
-                            // Build sorted index list to find display position
-                            if let Some(m) = self.last_metrics.as_ref() {
-                                let mut idxs: Vec<usize> = (0..m.top_processes.len()).collect();
-                                match self.procs_sort_by {
-                                    ProcSortBy::CpuDesc => idxs.sort_by(|&a, &b| {
-                                        let aa = m.top_processes[a].cpu_usage;
-                                        let bb = m.top_processes[b].cpu_usage;
-                                        bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
-                                    }),
-                                    ProcSortBy::MemDesc => idxs.sort_by(|&a, &b| {
-                                        let aa = m.top_processes[a].mem_bytes;
-                                        let bb = m.top_processes[b].mem_bytes;
-                                        bb.cmp(&aa)
-                                    }),
-                                }
-
-                                // Find the display position of the selected process
-                                if let Some(display_pos) =
-                                    idxs.iter().position(|&idx| idx == selected_idx)
+                            // Find the display position of the selected process in filtered list
+                            if let Some(display_pos) =
+                                idxs.iter().position(|&idx| idx == selected_idx)
+                            {
+                                // Calculate viewport size
+                                // Account for: borders (2) + header (1) + search box if active (3)
+                                let extra_rows = if self.process_search_active
+                                    || !self.process_search_query.is_empty()
                                 {
-                                    // Adjust scroll offset to keep selection visible
-                                    if display_pos < self.procs_scroll_offset {
-                                        // Selection is above viewport, scroll up
-                                        self.procs_scroll_offset = display_pos;
-                                    } else if display_pos
-                                        >= self.procs_scroll_offset + viewport_rows
-                                    {
-                                        // Selection is below viewport, scroll down
-                                        self.procs_scroll_offset =
-                                            display_pos.saturating_sub(viewport_rows - 1);
-                                    }
+                                    3 // search box with border
+                                } else {
+                                    0
+                                };
+                                let viewport_rows =
+                                    p_area.height.saturating_sub(3 + extra_rows) as usize;
+
+                                // Adjust scroll offset to keep selection visible
+                                if display_pos < self.procs_scroll_offset {
+                                    // Selection is above viewport, scroll up
+                                    self.procs_scroll_offset = display_pos;
+                                } else if display_pos >= self.procs_scroll_offset + viewport_rows {
+                                    // Selection is below viewport, scroll down
+                                    self.procs_scroll_offset =
+                                        display_pos.saturating_sub(viewport_rows - 1);
                                 }
                             }
                         }
@@ -846,6 +919,7 @@ impl App {
                                     total_rows: mm.top_processes.len(),
                                     metrics: self.last_metrics.as_ref(),
                                     sort_by: self.procs_sort_by,
+                                    search_query: &self.process_search_query,
                                 })
                             {
                                 self.procs_sort_by = new_sort;
@@ -930,6 +1004,11 @@ impl App {
 
                                         let mem_bytes = details.process.mem_bytes;
                                         push_capped(&mut self.process_mem_history, mem_bytes, 600);
+
+                                        // Track maximum memory usage
+                                        if mem_bytes > self.max_process_mem_bytes {
+                                            self.max_process_mem_bytes = mem_bytes;
+                                        }
 
                                         // I/O bytes from agent are cumulative, calculate deltas
                                         if let Some(read) = details.process.read_bytes {
@@ -1036,6 +1115,7 @@ impl App {
         self.process_io_write_history.clear();
         self.last_io_read_bytes = None;
         self.last_io_write_bytes = None;
+        self.max_process_mem_bytes = 0;
         self.process_details_unsupported = false;
     }
 
@@ -1195,11 +1275,15 @@ impl App {
         crate::ui::processes::draw_top_processes(
             f,
             procs_area,
-            self.last_metrics.as_ref(),
-            self.procs_scroll_offset,
-            self.procs_sort_by,
-            self.selected_process_pid,
-            self.selected_process_index,
+            crate::ui::processes::ProcessDisplayParams {
+                metrics: self.last_metrics.as_ref(),
+                scroll_offset: self.procs_scroll_offset,
+                sort_by: self.procs_sort_by,
+                selected_process_pid: self.selected_process_pid,
+                selected_process_index: self.selected_process_index,
+                search_query: &self.process_search_query,
+                search_active: self.process_search_active,
+            },
         );
 
         // Render modals on top of everything else
@@ -1216,6 +1300,7 @@ impl App {
                         io_read: &self.process_io_read_history,
                         io_write: &self.process_io_write_history,
                     },
+                    max_mem_bytes: self.max_process_mem_bytes,
                     unsupported: self.process_details_unsupported,
                 },
             );
@@ -1244,6 +1329,8 @@ impl Default for App {
             selected_process_pid: None,
             selected_process_index: None,
             prev_selected_process_pid: None,
+            process_search_active: false,
+            process_search_query: String::new(),
             last_procs_poll: Instant::now()
                 .checked_sub(Duration::from_secs(2))
                 .unwrap_or_else(Instant::now), // trigger immediately on first loop
@@ -1261,6 +1348,7 @@ impl Default for App {
             process_io_write_history: VecDeque::with_capacity(600),
             last_io_read_bytes: None,
             last_io_write_bytes: None,
+            max_process_mem_bytes: 0,
             process_details_unsupported: false,
             last_process_details_poll: Instant::now()
                 .checked_sub(Duration::from_secs(10))

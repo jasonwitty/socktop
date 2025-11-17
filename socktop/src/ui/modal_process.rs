@@ -16,6 +16,15 @@ use super::modal_format::{calculate_dynamic_y_max, format_uptime, normalize_cpu_
 use super::modal_types::{ProcessModalData, ScatterPlotParams};
 use super::theme::{MODAL_BG, MODAL_HINT_FG, PROCESS_DETAILS_ACCENT};
 
+/// Parameters for rendering memory and I/O graphs
+struct MemoryIoParams<'a> {
+    process: &'a socktop_connector::DetailedProcessInfo,
+    mem_history: &'a std::collections::VecDeque<u64>,
+    io_read_history: &'a std::collections::VecDeque<u64>,
+    io_write_history: &'a std::collections::VecDeque<u64>,
+    max_mem_bytes: u64,
+}
+
 impl ModalManager {
     pub(super) fn render_process_details(
         &mut self,
@@ -57,10 +66,13 @@ impl ModalManager {
             self.render_middle_row_with_metadata(
                 f,
                 main_chunks[1],
-                &details.process,
-                data.history.mem,
-                data.history.io_read,
-                data.history.io_write,
+                MemoryIoParams {
+                    process: &details.process,
+                    mem_history: data.history.mem,
+                    io_read_history: data.history.io_read,
+                    io_write_history: data.history.io_write,
+                    max_mem_bytes: data.max_mem_bytes,
+                },
             );
 
             // Bottom Row: Journal Events
@@ -169,22 +181,14 @@ impl ModalManager {
         f.render_widget(plot_block, area);
     }
 
-    fn render_memory_io_graphs(
-        &self,
-        f: &mut Frame,
-        area: Rect,
-        process: &socktop_connector::DetailedProcessInfo,
-        mem_history: &std::collections::VecDeque<u64>,
-        io_read_history: &std::collections::VecDeque<u64>,
-        io_write_history: &std::collections::VecDeque<u64>,
-    ) {
+    fn render_memory_io_graphs(&self, f: &mut Frame, area: Rect, params: MemoryIoParams) {
         let graphs_block = Block::default()
             .title("Memory & I/O")
             .borders(Borders::ALL)
             .padding(Padding::horizontal(1));
 
-        let mem_mb = process.mem_bytes as f64 / 1_048_576.0;
-        let virtual_mb = process.virtual_mem_bytes as f64 / 1_048_576.0;
+        let mem_mb = params.process.mem_bytes as f64 / 1_048_576.0;
+        let virtual_mb = params.process.virtual_mem_bytes as f64 / 1_048_576.0;
 
         let mut content_lines = vec![
             Line::from(vec![
@@ -198,8 +202,12 @@ impl ModalManager {
         ];
 
         // Add memory sparkline if we have history
-        if mem_history.len() >= 2 {
-            let mem_data: Vec<u64> = mem_history.iter().map(|&bytes| bytes / 1_048_576).collect(); // Convert to MB
+        if params.mem_history.len() >= 2 {
+            let mem_data: Vec<u64> = params
+                .mem_history
+                .iter()
+                .map(|&bytes| bytes / 1_048_576)
+                .collect(); // Convert to MB
             let max_mem = mem_data.iter().copied().max().unwrap_or(1).max(1);
 
             // Create mini sparkline using Unicode blocks
@@ -228,8 +236,23 @@ impl ModalManager {
             Span::raw(format!("{virtual_mb:.1} MB")),
         ]));
 
+        // Add max memory if we have tracked it
+        if params.max_mem_bytes > 0 {
+            let max_mb = params.max_mem_bytes as f64 / 1_048_576.0;
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    "  Max Memory: ",
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("{max_mb:.1} MB"),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
+        }
+
         // Add shared memory if available
-        if let Some(shared_bytes) = process.shared_mem_bytes {
+        if let Some(shared_bytes) = params.process.shared_mem_bytes {
             let shared_mb = shared_bytes as f64 / 1_048_576.0;
             content_lines.push(Line::from(vec![
                 Span::styled("  Shared: ", Style::default().add_modifier(Modifier::DIM)),
@@ -244,7 +267,7 @@ impl ModalManager {
         ]));
 
         // Add I/O stats if available
-        match (process.read_bytes, process.write_bytes) {
+        match (params.process.read_bytes, params.process.write_bytes) {
             (Some(read), Some(write)) => {
                 let read_mb = read as f64 / 1_048_576.0;
                 let write_mb = write as f64 / 1_048_576.0;
@@ -254,8 +277,9 @@ impl ModalManager {
                 ]));
 
                 // Add read I/O sparkline if we have history
-                if io_read_history.len() >= 2 {
-                    let read_data: Vec<u64> = io_read_history
+                if params.io_read_history.len() >= 2 {
+                    let read_data: Vec<u64> = params
+                        .io_read_history
                         .iter()
                         .map(|&bytes| bytes / 1_048_576)
                         .collect(); // Convert to MB
@@ -282,8 +306,9 @@ impl ModalManager {
                 ]));
 
                 // Add write I/O sparkline if we have history
-                if io_write_history.len() >= 2 {
-                    let write_data: Vec<u64> = io_write_history
+                if params.io_write_history.len() >= 2 {
+                    let write_data: Vec<u64> = params
+                        .io_write_history
                         .iter()
                         .map(|&bytes| bytes / 1_048_576)
                         .collect(); // Convert to MB
@@ -842,7 +867,7 @@ impl ModalManager {
             let total: f32 = cpu_history.iter().sum();
             normalize_cpu_usage(total / cpu_history.len() as f32, thread_count)
         };
-        let title = format!("📊 CPU avg: {avg_cpu:.1}% (now: {current_cpu:.1}%)");
+        let title = format!("CPU (now: {current_cpu:.1}% | {avg_cpu:.1}%)");
 
         // Similar to main CPU rendering but for process CPU
         if cpu_history.len() < 2 {
@@ -913,10 +938,7 @@ impl ModalManager {
         &mut self,
         f: &mut Frame,
         area: Rect,
-        process: &socktop_connector::DetailedProcessInfo,
-        mem_history: &std::collections::VecDeque<u64>,
-        io_read_history: &std::collections::VecDeque<u64>,
-        io_write_history: &std::collections::VecDeque<u64>,
+        params: MemoryIoParams,
     ) {
         // Split middle row: Memory/IO (30%) | Thread table (40%) | Command + Metadata (30%)
         let middle_chunks = Layout::default()
@@ -931,13 +953,16 @@ impl ModalManager {
         self.render_memory_io_graphs(
             f,
             middle_chunks[0],
-            process,
-            mem_history,
-            io_read_history,
-            io_write_history,
+            MemoryIoParams {
+                process: params.process,
+                mem_history: params.mem_history,
+                io_read_history: params.io_read_history,
+                io_write_history: params.io_write_history,
+                max_mem_bytes: params.max_mem_bytes,
+            },
         );
-        self.render_thread_table(f, middle_chunks[1], process);
-        self.render_command_and_metadata(f, middle_chunks[2], process);
+        self.render_thread_table(f, middle_chunks[1], params.process);
+        self.render_command_and_metadata(f, middle_chunks[2], params.process);
     }
 
     fn render_command_and_metadata(

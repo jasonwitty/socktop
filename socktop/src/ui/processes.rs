@@ -18,6 +18,66 @@ use crate::ui::theme::{
 };
 use crate::ui::util::human;
 
+/// Simple fuzzy matching: returns true if all characters in needle appear in haystack in order (case-insensitive)
+fn fuzzy_match(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let haystack_lower = haystack.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let mut haystack_chars = haystack_lower.chars();
+
+    for needle_char in needle_lower.chars() {
+        if !haystack_chars.any(|c| c == needle_char) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Get filtered and sorted process indices based on search query and sort order
+pub fn get_filtered_sorted_indices(
+    metrics: &Metrics,
+    search_query: &str,
+    sort_by: ProcSortBy,
+) -> Vec<usize> {
+    // Filter processes by search query (fuzzy match)
+    let mut filtered_idxs: Vec<usize> = if search_query.is_empty() {
+        (0..metrics.top_processes.len()).collect()
+    } else {
+        (0..metrics.top_processes.len())
+            .filter(|&i| fuzzy_match(&metrics.top_processes[i].name, search_query))
+            .collect()
+    };
+
+    // Sort filtered rows
+    match sort_by {
+        ProcSortBy::CpuDesc => filtered_idxs.sort_by(|&a, &b| {
+            let aa = metrics.top_processes[a].cpu_usage;
+            let bb = metrics.top_processes[b].cpu_usage;
+            bb.partial_cmp(&aa).unwrap_or(Ordering::Equal)
+        }),
+        ProcSortBy::MemDesc => filtered_idxs.sort_by(|&a, &b| {
+            let aa = metrics.top_processes[a].mem_bytes;
+            let bb = metrics.top_processes[b].mem_bytes;
+            bb.cmp(&aa)
+        }),
+    }
+
+    filtered_idxs
+}
+
+/// Parameters for drawing the top processes table
+pub struct ProcessDisplayParams<'a> {
+    pub metrics: Option<&'a Metrics>,
+    pub scroll_offset: usize,
+    pub sort_by: ProcSortBy,
+    pub selected_process_pid: Option<u32>,
+    pub selected_process_index: Option<usize>,
+    pub search_query: &'a str,
+    pub search_active: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcSortBy {
     #[default]
@@ -34,29 +94,60 @@ const COLS: [Constraint; 5] = [
     Constraint::Length(8),      // Mem %
 ];
 
-pub fn draw_top_processes(
-    f: &mut ratatui::Frame<'_>,
-    area: Rect,
-    m: Option<&Metrics>,
-    scroll_offset: usize,
-    sort_by: ProcSortBy,
-    selected_process_pid: Option<u32>,
-    selected_process_index: Option<usize>,
-) {
+pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: ProcessDisplayParams) {
     // Draw outer block and title
-    let Some(mm) = m else { return };
+    let Some(mm) = params.metrics else { return };
     let total = mm.process_count.unwrap_or(mm.top_processes.len());
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!("Top Processes ({total} total)"));
     f.render_widget(block, area);
 
-    // Inner area and content area (reserve 2 columns for scrollbar)
+    // Inner area (reserve space for search box if active)
     let inner = Rect {
         x: area.x + 1,
         y: area.y + 1,
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
+    };
+
+    // Draw search box if active
+    let content_start_y = if params.search_active || !params.search_query.is_empty() {
+        let search_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 3, // Height for border + content
+        };
+
+        let search_text = if params.search_active {
+            format!("Search: {}_", params.search_query)
+        } else {
+            format!(
+                "Filter: {} (press / to edit, c to clear)",
+                params.search_query
+            )
+        };
+
+        let search_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let search_paragraph = Paragraph::new(search_text)
+            .block(search_block)
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(search_paragraph, search_area);
+
+        inner.y + 3
+    } else {
+        inner.y
+    };
+
+    // Content area (reserve 2 columns for scrollbar)
+    let inner = Rect {
+        x: inner.x,
+        y: content_start_y,
+        width: inner.width,
+        height: inner.height.saturating_sub(content_start_y - (area.y + 1)),
     };
     if inner.height < 1 || inner.width < 3 {
         return;
@@ -68,27 +159,15 @@ pub fn draw_top_processes(
         height: inner.height,
     };
 
-    // Sort rows (by CPU% or Mem bytes), descending.
-    let mut idxs: Vec<usize> = (0..mm.top_processes.len()).collect();
-    match sort_by {
-        ProcSortBy::CpuDesc => idxs.sort_by(|&a, &b| {
-            let aa = mm.top_processes[a].cpu_usage;
-            let bb = mm.top_processes[b].cpu_usage;
-            bb.partial_cmp(&aa).unwrap_or(Ordering::Equal)
-        }),
-        ProcSortBy::MemDesc => idxs.sort_by(|&a, &b| {
-            let aa = mm.top_processes[a].mem_bytes;
-            let bb = mm.top_processes[b].mem_bytes;
-            bb.cmp(&aa)
-        }),
-    }
+    // Get filtered and sorted indices
+    let idxs = get_filtered_sorted_indices(mm, params.search_query, params.sort_by);
 
     // Scrolling
     let total_rows = idxs.len();
     let header_rows = 1usize;
     let viewport_rows = content.height.saturating_sub(header_rows as u16) as usize;
     let max_off = total_rows.saturating_sub(viewport_rows);
-    let offset = scroll_offset.min(max_off);
+    let offset = params.scroll_offset.min(max_off);
     let show_n = total_rows.saturating_sub(offset).min(viewport_rows);
 
     // Build visible rows
@@ -122,9 +201,9 @@ pub fn draw_top_processes(
         };
 
         // Check if this process is selected - prioritize PID matching
-        let is_selected = if let Some(selected_pid) = selected_process_pid {
+        let is_selected = if let Some(selected_pid) = params.selected_process_pid {
             selected_pid == p.pid
-        } else if let Some(selected_idx) = selected_process_index {
+        } else if let Some(selected_idx) = params.selected_process_index {
             selected_idx == ix // ix is the absolute index in the sorted list
         } else {
             false
@@ -153,11 +232,11 @@ pub fn draw_top_processes(
     });
 
     // Header with sort indicator
-    let cpu_hdr = match sort_by {
+    let cpu_hdr = match params.sort_by {
         ProcSortBy::CpuDesc => "CPU % •",
         _ => "CPU %",
     };
-    let mem_hdr = match sort_by {
+    let mem_hdr = match params.sort_by {
         ProcSortBy::MemDesc => "Mem •",
         _ => "Mem",
     };
@@ -174,9 +253,9 @@ pub fn draw_top_processes(
     f.render_widget(table, content);
 
     // Draw tooltip if a process is selected
-    if let Some(selected_pid) = selected_process_pid {
+    if let Some(selected_pid) = params.selected_process_pid {
         // Find the selected process to get its name
-        let process_info = if let Some(metrics) = m {
+        let process_info = if let Some(metrics) = params.metrics {
             metrics
                 .top_processes
                 .iter()
@@ -261,6 +340,7 @@ pub struct ProcessKeyParams<'a> {
     pub key: crossterm::event::KeyEvent,
     pub metrics: Option<&'a Metrics>,
     pub sort_by: ProcSortBy,
+    pub search_query: &'a str,
 }
 
 /// LEGACY: Use processes_handle_key_with_selection for enhanced functionality
@@ -278,78 +358,70 @@ pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
 
     match params.key.code {
         KeyCode::Up => {
-            // Build sorted index list to navigate through display order
+            // Navigate through filtered and sorted results
             if let Some(m) = params.metrics {
-                let mut idxs: Vec<usize> = (0..m.top_processes.len()).collect();
-                match params.sort_by {
-                    ProcSortBy::CpuDesc => idxs.sort_by(|&a, &b| {
-                        let aa = m.top_processes[a].cpu_usage;
-                        let bb = m.top_processes[b].cpu_usage;
-                        bb.partial_cmp(&aa).unwrap_or(Ordering::Equal)
-                    }),
-                    ProcSortBy::MemDesc => idxs.sort_by(|&a, &b| {
-                        let aa = m.top_processes[a].mem_bytes;
-                        let bb = m.top_processes[b].mem_bytes;
-                        bb.cmp(&aa)
-                    }),
-                }
+                let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
 
-                if params.selected_process_index.is_none() || params.selected_process_pid.is_none()
+                if idxs.is_empty() {
+                    // No filtered results, clear selection
+                    *params.selected_process_index = None;
+                    *params.selected_process_pid = None;
+                } else if params.selected_process_index.is_none()
+                    || params.selected_process_pid.is_none()
                 {
-                    // No selection - select the first process in sorted order
-                    if !idxs.is_empty() {
+                    // No selection - select the first process in filtered/sorted order
+                    let first_idx = idxs[0];
+                    *params.selected_process_index = Some(first_idx);
+                    *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
+                } else if let Some(current_idx) = *params.selected_process_index {
+                    // Find current position in filtered/sorted list
+                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx) {
+                        if pos > 0 {
+                            // Move up in filtered/sorted list
+                            let new_idx = idxs[pos - 1];
+                            *params.selected_process_index = Some(new_idx);
+                            *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
+                        }
+                    } else {
+                        // Current selection not in filtered list, select first result
                         let first_idx = idxs[0];
                         *params.selected_process_index = Some(first_idx);
                         *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                    }
-                } else if let Some(current_idx) = *params.selected_process_index {
-                    // Find current position in sorted list
-                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx)
-                        && pos > 0
-                    {
-                        // Move up in sorted list
-                        let new_idx = idxs[pos - 1];
-                        *params.selected_process_index = Some(new_idx);
-                        *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
                     }
                 }
             }
             true // Handled
         }
         KeyCode::Down => {
-            // Build sorted index list to navigate through display order
+            // Navigate through filtered and sorted results
             if let Some(m) = params.metrics {
-                let mut idxs: Vec<usize> = (0..m.top_processes.len()).collect();
-                match params.sort_by {
-                    ProcSortBy::CpuDesc => idxs.sort_by(|&a, &b| {
-                        let aa = m.top_processes[a].cpu_usage;
-                        let bb = m.top_processes[b].cpu_usage;
-                        bb.partial_cmp(&aa).unwrap_or(Ordering::Equal)
-                    }),
-                    ProcSortBy::MemDesc => idxs.sort_by(|&a, &b| {
-                        let aa = m.top_processes[a].mem_bytes;
-                        let bb = m.top_processes[b].mem_bytes;
-                        bb.cmp(&aa)
-                    }),
-                }
+                let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
 
-                if params.selected_process_index.is_none() || params.selected_process_pid.is_none()
+                if idxs.is_empty() {
+                    // No filtered results, clear selection
+                    *params.selected_process_index = None;
+                    *params.selected_process_pid = None;
+                } else if params.selected_process_index.is_none()
+                    || params.selected_process_pid.is_none()
                 {
-                    // No selection - select the first process in sorted order
-                    if !idxs.is_empty() {
+                    // No selection - select the first process in filtered/sorted order
+                    let first_idx = idxs[0];
+                    *params.selected_process_index = Some(first_idx);
+                    *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
+                } else if let Some(current_idx) = *params.selected_process_index {
+                    // Find current position in filtered/sorted list
+                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx) {
+                        if pos + 1 < idxs.len() {
+                            // Move down in filtered/sorted list
+                            let new_idx = idxs[pos + 1];
+                            *params.selected_process_index = Some(new_idx);
+                            *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
+                        }
+                    } else {
+                        // Current selection not in filtered list, select first result
                         let first_idx = idxs[0];
                         *params.selected_process_index = Some(first_idx);
                         *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                    }
-                } else if let Some(current_idx) = *params.selected_process_index {
-                    // Find current position in sorted list
-                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx)
-                        && pos + 1 < idxs.len()
-                    {
-                        // Move down in sorted list
-                        let new_idx = idxs[pos + 1];
-                        *params.selected_process_index = Some(new_idx);
-                        *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
                     }
                 }
             }
@@ -455,6 +527,7 @@ pub struct ProcessMouseParams<'a> {
     pub total_rows: usize,
     pub metrics: Option<&'a Metrics>,
     pub sort_by: ProcSortBy,
+    pub search_query: &'a str,
 }
 
 /// Enhanced mouse handler that also manages process selection
@@ -470,11 +543,19 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
     if inner.height == 0 || inner.width <= 2 {
         return None;
     }
+
+    // Calculate content area - must match draw_top_processes exactly!
+    // If search is active or query exists, content starts after search box (3 lines)
+    let search_active = !params.search_query.is_empty();
+    let content_start_y = if search_active { inner.y + 3 } else { inner.y };
+
     let content = Rect {
         x: inner.x,
-        y: inner.y,
+        y: content_start_y,
         width: inner.width.saturating_sub(2),
-        height: inner.height,
+        height: inner
+            .height
+            .saturating_sub(if search_active { 3 } else { 0 }),
     };
 
     // Scrollbar interactions (click arrows/page/drag)
@@ -531,24 +612,12 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
     {
         let clicked_row = (params.mouse.row - data_start_row) as usize;
 
-        // Find the actual process using the same sorting logic as the drawing code
+        // Find the actual process using the same filtering/sorting logic as the drawing code
         if let Some(m) = params.metrics {
-            // Create the same sorted index array as in draw_top_processes
-            let mut idxs: Vec<usize> = (0..m.top_processes.len()).collect();
-            match params.sort_by {
-                ProcSortBy::CpuDesc => idxs.sort_by(|&a, &b| {
-                    let aa = m.top_processes[a].cpu_usage;
-                    let bb = m.top_processes[b].cpu_usage;
-                    bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
-                }),
-                ProcSortBy::MemDesc => idxs.sort_by(|&a, &b| {
-                    let aa = m.top_processes[a].mem_bytes;
-                    let bb = m.top_processes[b].mem_bytes;
-                    bb.cmp(&aa)
-                }),
-            }
+            // Use the same filtered and sorted indices as display
+            let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
 
-            // Calculate which process was actually clicked based on sorted order
+            // Calculate which process was actually clicked based on filtered/sorted order
             let visible_process_position = *params.scroll_offset + clicked_row;
             if visible_process_position < idxs.len() {
                 let actual_process_index = idxs[visible_process_position];

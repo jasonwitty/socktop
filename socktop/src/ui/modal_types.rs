@@ -15,6 +15,7 @@ pub struct ProcessModalData<'a> {
     pub details: Option<&'a socktop_connector::ProcessMetricsResponse>,
     pub journal: Option<&'a socktop_connector::JournalResponse>,
     pub history: ProcessHistoryData<'a>,
+    pub max_mem_bytes: u64,
     pub unsupported: bool,
 }
 

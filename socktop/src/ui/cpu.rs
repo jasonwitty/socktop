@@ -240,8 +240,19 @@ pub fn draw_cpu_avg_graph(
     hist: &std::collections::VecDeque<u64>,
     m: Option<&Metrics>,
 ) {
+    // Calculate average CPU over the monitoring period
+    let avg_cpu = if !hist.is_empty() {
+        let sum: u64 = hist.iter().sum();
+        sum as f64 / hist.len() as f64
+    } else {
+        0.0
+    };
+
     let title = if let Some(mm) = m {
-        format!("CPU avg (now: {:>5.1}%)", mm.cpu_total)
+        format!(
+            "CPU avg (now: {:>5.1}% | avg: {:>5.1}%)",
+            mm.cpu_total, avg_cpu
+        )
     } else {
         "CPU avg".into()
     };

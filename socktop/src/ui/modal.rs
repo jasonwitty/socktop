@@ -271,7 +271,7 @@ impl ModalManager {
             }
             ModalType::Help => {
                 // Help modal uses medium size
-                self.centered_rect(80, 80, area)
+                self.centered_rect(70, 80, area)
             }
             _ => {
                 // Other modals use smaller size
@@ -477,11 +477,19 @@ GLOBAL
   q/Q/Esc ........ Quit  │  a/A ....... About  │  h/H ....... Help
 
 PROCESS LIST
+  / .............. Start/edit fuzzy search
+  c/C ............ Clear search filter
   ↑/↓ ............ Select/navigate processes
   Enter .......... Open Process Details
   x/X ............ Clear selection
   Click header ... Sort by column (CPU/Mem)
   Click row ...... Select process
+
+SEARCH MODE (after pressing /)
+  Type ........... Enter search query (fuzzy match)
+  ↑/↓ ............ Navigate results while typing
+  Esc ............ Cancel search and clear filter
+  Enter .......... Apply filter and select first result
 
 CPU PER-CORE
   ←/→ ............ Scroll cores  │  PgUp/PgDn ... Page up/down
@@ -493,8 +501,11 @@ PROCESS DETAILS MODAL
   j/k ............ Scroll threads ↓/↑ (1 line)
   d/u ............ Scroll threads ↓/↑ (10 lines)
   [ / ] .......... Scroll journal ↑/↓
-  Esc/Enter ...... Close modal";
+  Esc/Enter ...... Close modal
 
+MODAL NAVIGATION
+  Tab/→ .......... Next button  │  Shift+Tab/← ... Previous button
+  Enter .......... Confirm/OK    │  Esc ............ Cancel/Close";
         // Render the border block
         let block = Block::default()
             .title(" Hotkey Help ")
