@@ -6,6 +6,8 @@ description = "Remote system monitor over WebSocket, TUI like top"
 edition = "2024"
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/jasonwitty/socktop"
+repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
 # socktop connector for agent communication
@@ -25,3 +27,20 @@ sysinfo = { workspace = true }
 [dev-dependencies]
 assert_cmd = "2.0"
 tempfile = "3"
+
+[package.metadata.deb]
+maintainer = "Jason Witty <jasonpwitty+socktop@proton.me>"
+copyright = "2024, Jason Witty <jasonpwitty+socktop@proton.me>"
+license-file = ["../LICENSE", "4"]
+extended-description = """\
+socktop is a remote system monitor with a rich terminal user interface (TUI) \
+that connects to remote hosts running the socktop_agent over WebSocket. \
+It provides real-time monitoring of CPU, memory, processes, and more with \
+an interface similar to the traditional 'top' command."""
+depends = "$auto"
+section = "admin"
+priority = "optional"
+assets = [
+    ["target/release/socktop", "usr/bin/", "755"],
+    ["../README.md", "usr/share/doc/socktop/", "644"],
+]

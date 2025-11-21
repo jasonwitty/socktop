@@ -1,0 +1,27 @@
+[Unit]
+Description=Socktop Agent - Remote System Monitor
+Documentation=https://github.com/jasonwitty/socktop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socktop_agent --port 3000
+Environment=RUST_LOG=info
+# Optional authentication token:
+# Environment=SOCKTOP_TOKEN=changeme
+Restart=on-failure
+RestartSec=5
+User=socktop
+Group=socktop
+NoNewPrivileges=true
+
+# Security hardening
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/socktop
+StateDirectory=socktop
+
+[Install]
+WantedBy=multi-user.target

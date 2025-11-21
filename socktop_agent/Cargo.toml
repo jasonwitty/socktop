@@ -6,6 +6,8 @@ description = "Socktop agent daemon. Serves host metrics over WebSocket."
 edition = "2024"
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/jasonwitty/socktop"
+repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
 # Tokio: Use minimal features instead of "full" to reduce binary size
@@ -45,3 +47,21 @@ protoc-bin-vendored = "3"
 assert_cmd = "2.0"
 tempfile = "3.10"
 tokio-tungstenite = "0.21"
+
+[package.metadata.deb]
+maintainer = "Jason Witty <jasonpwitty+socktop@proton.me>"
+copyright = "2024, Jason Witty <jasonpwitty+socktop@proton.me>"
+license-file = ["../LICENSE", "4"]
+extended-description = """\
+socktop_agent is the daemon component that runs on remote hosts to collect \
+and serve system metrics over WebSocket. It gathers CPU, memory, disk, network, \
+GPU, and process information that can be monitored remotely by the socktop TUI client."""
+depends = "$auto"
+section = "admin"
+priority = "optional"
+assets = [
+    ["target/release/socktop_agent", "usr/bin/", "755"],
+    ["../README.md", "usr/share/doc/socktop_agent/", "644"],
+]
+maintainer-scripts = "debian/"
+systemd-units = { unit-name = "socktop-agent", unit-scripts = ".", enable = false }

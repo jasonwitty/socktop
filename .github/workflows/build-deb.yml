@@ -1,0 +1,180 @@
+name: Build Debian Packages
+
+on:
+  push:
+    branches:
+      - master
+      - feature/debian-packaging
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build .deb for ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Install cross-compilation tools (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Configure cross-compilation (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build socktop .deb package
+        run: |
+          cargo deb --package socktop --target ${{ matrix.target }} --no-strip
+
+      - name: Build socktop_agent .deb package
+        run: |
+          cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
+
+      - name: Rename packages with architecture
+        run: |
+          mkdir -p debs
+          cp target/${{ matrix.target }}/debian/*.deb debs/
+          cd debs
+          for deb in *.deb; do
+            # Extract package info
+            pkg_name=$(echo $deb | cut -d_ -f1)
+            version=$(echo $deb | cut -d_ -f2)
+            # Rename to include arch
+            mv "$deb" "${pkg_name}_${version}_${{ matrix.arch }}.deb"
+          done
+
+      - name: List generated packages
+        run: ls -lh debs/
+
+      - name: Upload .deb packages as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages-${{ matrix.arch }}
+          path: debs/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
+  # Combine all artifacts into a single downloadable archive
+  combine-artifacts:
+    name: Combine all .deb packages
+    needs: build-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AMD64 packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-amd64
+          path: all-debs
+
+      - name: Download ARM64 packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-arm64
+          path: all-debs
+
+      - name: List all packages
+        run: |
+          echo "All generated .deb packages:"
+          ls -lh all-debs/
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-debian-packages
+          path: all-debs/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Generate checksums
+        run: |
+          cd all-debs
+          sha256sum *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: all-debs/SHA256SUMS
+          retention-days: 90
+
+  # Optional: Create a release with the .deb files if this is a tag
+  create-release:
+    name: Create GitHub Release
+    needs: combine-artifacts
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          name: all-debian-packages
+          path: release-debs
+
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+          path: release-debs
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-debs/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
