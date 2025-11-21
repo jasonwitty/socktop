@@ -26,6 +26,10 @@ jobs:
             arch: amd64
           - target: aarch64-unknown-linux-gnu
             arch: arm64
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+          - target: riscv64gc-unknown-linux-gnu
+            arch: riscv64
 
     steps:
       - name: Checkout code
@@ -50,6 +54,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
+      - name: Install cross-compilation tools (ARMhf)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+
+      - name: Install cross-compilation tools (RISC-V)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+
       - name: Configure cross-compilation (ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -57,6 +73,24 @@ jobs:
           cat >> .cargo/config.toml << EOF
           [target.aarch64-unknown-linux-gnu]
           linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Configure cross-compilation (ARMhf)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.armv7-unknown-linux-gnueabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          EOF
+
+      - name: Configure cross-compilation (RISC-V)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.riscv64gc-unknown-linux-gnu]
+          linker = "riscv64-linux-gnu-gcc"
           EOF
 
       - name: Cache cargo registry
@@ -85,18 +119,10 @@ jobs:
         run: |
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
 
-      - name: Rename packages with architecture
+      - name: Copy packages to debs directory
         run: |
           mkdir -p debs
           cp target/${{ matrix.target }}/debian/*.deb debs/
-          cd debs
-          for deb in *.deb; do
-            # Extract package info
-            pkg_name=$(echo $deb | cut -d_ -f1)
-            version=$(echo $deb | cut -d_ -f2)
-            # Rename to include arch
-            mv "$deb" "${pkg_name}_${version}_${{ matrix.arch }}.deb"
-          done
 
       - name: List generated packages
         run: ls -lh debs/
@@ -125,6 +151,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: debian-packages-arm64
+          path: all-debs
+
+      - name: Download ARMhf packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-armhf
+          path: all-debs
+
+      - name: Download RISC-V packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-riscv64
           path: all-debs
 
       - name: List all packages
