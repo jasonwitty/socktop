@@ -115,9 +115,15 @@ jobs:
         run: |
           cargo deb --package socktop --target ${{ matrix.target }} --no-strip
 
-      - name: Build socktop_agent .deb package
+      - name: Build socktop_agent .deb package (with GPU support)
+        if: matrix.target != 'riscv64gc-unknown-linux-gnu'
         run: |
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
+
+      - name: Build socktop_agent .deb package (without GPU support for RISC-V)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip --no-default-features
 
       - name: Copy packages to debs directory
         run: |
