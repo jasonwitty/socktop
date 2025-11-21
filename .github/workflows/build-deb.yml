@@ -6,7 +6,7 @@ on:
       - master
       - feature/debian-packaging
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches:
       - master
@@ -38,6 +38,11 @@ jobs:
 
       - name: Install cargo-deb
         run: cargo install cargo-deb
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdrm-dev libdrm-amdgpu1
 
       - name: Install cross-compilation tools (ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
