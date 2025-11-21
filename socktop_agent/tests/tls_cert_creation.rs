@@ -1,3 +1,4 @@
+use assert_cmd::cargo::cargo_bin;
 use assert_cmd::prelude::*;
 use std::fs;
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ fn generates_self_signed_cert_and_key_in_xdg_path() {
     let xdg = tmpdir.path().to_path_buf();
 
     // Run the agent once with --enableSSL, short timeout so it exits quickly when killed
-    let mut cmd = Command::cargo_bin("socktop_agent").expect("binary exists");
+    let mut cmd = Command::new(cargo_bin!("socktop_agent"));
     // Bind to an ephemeral port (-p 0) to avoid conflicts/flakes
     cmd.env("XDG_CONFIG_HOME", &xdg)
         .arg("--enableSSL")
