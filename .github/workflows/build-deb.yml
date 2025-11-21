@@ -116,12 +116,12 @@ jobs:
           cargo deb --package socktop --target ${{ matrix.target }} --no-strip
 
       - name: Build socktop_agent .deb package (with GPU support)
-        if: matrix.target != 'riscv64gc-unknown-linux-gnu'
+        if: matrix.target != 'riscv64gc-unknown-linux-gnu' && matrix.target != 'armv7-unknown-linux-gnueabihf'
         run: |
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
 
-      - name: Build socktop_agent .deb package (without GPU support for RISC-V)
-        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+      - name: Build socktop_agent .deb package (without GPU support for RISC-V and ARMv7)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: |
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip --no-default-features
 
