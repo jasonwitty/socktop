@@ -30,6 +30,12 @@ fn arg_value(name: &str) -> Option<String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Install rustls crypto provider before any TLS operations
+    // This is required when using axum-server's tls-rustls feature
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok(); // Ignore error if already installed
+
     #[cfg(feature = "logging")]
     tracing_subscriber::fmt::init();
 
