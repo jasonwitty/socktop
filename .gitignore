@@ -1,6 +1,7 @@
 /target
 .vscode/
 /socktop-wasm-test/target
+/.cargo/
 
 # Documentation files from development sessions (context-specific, not for public repo)
 /OPTIMIZATION_PROCESS_DETAILS.md
