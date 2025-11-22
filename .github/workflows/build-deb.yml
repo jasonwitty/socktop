@@ -53,9 +53,11 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           # Configure ARM64 sources to use ports.ubuntu.com
-          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
+          sudo sed -i 's/^deb \(http\|https\)/deb [arch=amd64] \1/' /etc/apt/sources.list
+          sudo sed -i 's/^deb \(http\|https\)/deb [arch=amd64] \1/' /etc/apt/sources.list.d/*.list || true
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc) main universe restricted multiverse" | sudo tee -a /etc/apt/sources.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-updates main universe restricted multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-backports main universe restricted multiverse" | sudo tee -a /etc/apt/sources.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-security main universe restricted multiverse" | sudo tee -a /etc/apt/sources.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libdrm-dev:arm64 libdrm-amdgpu1:arm64
