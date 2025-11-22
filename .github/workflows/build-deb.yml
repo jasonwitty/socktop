@@ -54,7 +54,11 @@ jobs:
           sudo dpkg --add-architecture arm64
           # Disable all existing sources and create new ones with proper arch specifications
           sudo mv /etc/apt/sources.list /etc/apt/sources.list.backup
-          sudo find /etc/apt/sources.list.d/ -name "*.list" -exec mv {} {}.backup \; || true
+          sudo mv /etc/apt/sources.list.d /etc/apt/sources.list.d.backup || true
+          sudo mkdir -p /etc/apt/sources.list.d
+          # Clear APT cache and lists
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo mkdir -p /var/lib/apt/lists/partial
           # Create new sources.list with both amd64 and arm64
           cat << EOF | sudo tee /etc/apt/sources.list
           deb [arch=amd64] http://archive.ubuntu.com/ubuntu $(lsb_release -sc) main universe restricted multiverse
@@ -66,6 +70,10 @@ jobs:
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-backports main universe restricted multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-security main universe restricted multiverse
           EOF
+          echo "=== Contents of /etc/apt/sources.list ==="
+          cat /etc/apt/sources.list
+          echo "=== Contents of /etc/apt/sources.list.d/ ==="
+          ls -la /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libdrm-dev:arm64 libdrm-amdgpu1:arm64
 
