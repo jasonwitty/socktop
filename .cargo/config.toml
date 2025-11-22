@@ -1,0 +1,6 @@
+[target.riscv64gc-unknown-linux-gnu]
+linker = "riscv64-linux-gnu-gcc"
+
+[build]
+# Uncomment to set default target
+# target = "riscv64gc-unknown-linux-gnu"
