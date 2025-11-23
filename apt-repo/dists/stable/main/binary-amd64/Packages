@@ -1,0 +1,38 @@
+Package: socktop
+Version: 1.50.0-1
+Architecture: amd64
+Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
+Installed-Size: 3459
+Filename: pool/main/socktop_1.50.0-1_amd64.deb
+Size: 1278940
+MD5sum: 0215e178e306d9379669065e8c78582b
+SHA1: 04e0416389f5cecd584fd1f6b3568711f2645eee
+SHA256: 69eb04b1de48541c95950a97b16357fcd9c51ffaceb143f63de4a9d758fad297
+Section: admin
+Priority: optional
+Homepage: https://github.com/jasonwitty/socktop
+Description: Remote system monitor over WebSocket, TUI like top
+ socktop is a remote system monitor with a rich terminal user interface (TUI)
+ that connects to remote hosts running the socktop_agent over WebSocket. It
+ provides real-time monitoring of CPU, memory, processes, and more with an
+ interface similar to the traditional 'top' command.
+
+Package: socktop-agent
+Version: 1.50.2-1
+Architecture: amd64
+Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
+Installed-Size: 6793
+Filename: pool/main/socktop-agent_1.50.2-1_amd64.deb
+Size: 1896272
+MD5sum: 22e78d03e83dcf84d6ec4a009b285902
+SHA1: 26a9f4fedfdba06a047044027223f2944cf72ba6
+SHA256: 11922af475146f60347a9c52cff4bbce1ce524bdb4293b2c436f3c71876e17d5
+Section: admin
+Priority: optional
+Homepage: https://github.com/jasonwitty/socktop
+Description: Socktop agent daemon. Serves host metrics over WebSocket.
+ socktop_agent is the daemon component that runs on remote hosts to collect and
+ serve system metrics over WebSocket. It gathers CPU, memory, disk, network,
+ GPU, and process information that can be monitored remotely by the socktop TUI
+ client.
+

@@ -1,0 +1,32 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: socktop
+Label: socktop
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64 armhf
+Components: main
+Description: socktop APT repository
+Date: Sun, 23 Nov 2025 04:05:21 +0000
+MD5Sum:
+ 0bddefb2f13cb7c86cd05fe1ce20310f 1549 main/binary-amd64/Packages
+ 674f0e552cbb7dc65380651a2a8d279e 799 main/binary-amd64/Packages.gz
+SHA256:
+ babfbb4839e7fdfbc83742c16996791b0402a1315889b530330b338380398263 1549 main/binary-amd64/Packages
+ f8c48d0f7bf53eb02c6dbf5f1cdd046fe71b87273cf763c5bb2e95d9757a7a82 799 main/binary-amd64/Packages.gz
+
+-----BEGIN PGP SIGNATURE-----
+
+iQGzBAEBCgAdFiEEHnVWqAU5uDlLwoINESwaeYRl+/IFAmkiiAYACgkQESwaeYRl
++/KBsAv/eYhnK/XrNtPhLyw/zX2cGfUtBsBZrypFhV/n+TvudAIwQaqxDEvLlBUn
+HBAhMKDQXGs7V45+nOgDX4rKWUqJh4SPbJgNbVte2PX7U+hsMpZBsYp3vkjApgTO
+pq2CCkViyBXgTY+6vUigtvfJ9afTTWI6Qm4dLXZ7hxErBxgHQyowOoO/sF92cNOu
+AosBMpE+qSy7sVqJU5g/JXJh0kddKFotXHSGA1kFMzJafJC/n5nLrusDzFJRQqyH
+Io+6inYWjlb5o79z0tJzAvG1mgplLRppMBjoVJ/RJ+gT+QE70kokR6wvsgDqsKNd
+mvB0TNj0zY0g6Is6V3XMyf0u+6BtLTbua913HPiqBfErgeV58vzsst+y0It42TXi
+aw+UF2Kw/YhPq1rZFxgnAVcMja3qlXWpH57gmgIPovBCsPsiywWiHLsSHRzAI22b
+zeTsUST/4toR/ruZVbUZvWoWAR4tzsSuwXJFx/hhinTQQTNHErXASOX986UaL9L7
+o2/pTKLe
+=IeBY
+-----END PGP SIGNATURE-----

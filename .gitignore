@@ -6,3 +6,11 @@
 # Documentation files from development sessions (context-specific, not for public repo)
 /OPTIMIZATION_PROCESS_DETAILS.md
 /THREAD_SUPPORT.md
+
+# APT Repository - Safety: Never commit private keys!
+*.asc
+*-private.key
+*-secret.key
+gpg-private-backup.key
+secring.gpg
+# Note: Release.gpg, InRelease, and KEY.gpg (public) ARE safe to commit
