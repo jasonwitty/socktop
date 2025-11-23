@@ -5,54 +5,278 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>socktop APT Repository</title>
     <style>
+        /* Catppuccin Frappe Color Palette */
+        :root {
+            --ctp-base: #303446;
+            --ctp-mantle: #292c3c;
+            --ctp-crust: #232634;
+            --ctp-text: #c6d0f5;
+            --ctp-subtext1: #b5bfe2;
+            --ctp-subtext0: #a5adce;
+            --ctp-overlay2: #949cbb;
+            --ctp-overlay1: #838ba7;
+            --ctp-overlay0: #737994;
+            --ctp-surface2: #626880;
+            --ctp-surface1: #51576d;
+            --ctp-surface0: #414559;
+            --ctp-lavender: #babbf1;
+            --ctp-blue: #8caaee;
+            --ctp-sapphire: #85c1dc;
+            --ctp-sky: #99d1db;
+            --ctp-teal: #81c8be;
+            --ctp-green: #a6d189;
+            --ctp-yellow: #e5c890;
+            --ctp-peach: #ef9f76;
+            --ctp-maroon: #ea999c;
+            --ctp-red: #e78284;
+            --ctp-mauve: #ca9ee6;
+            --ctp-pink: #f4b8e4;
+            --ctp-flamingo: #eebebe;
+            --ctp-rosewater: #f2d5cf;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 20px;
+            background-color: var(--ctp-base);
+            color: var(--ctp-text);
             line-height: 1.6;
+            padding: 20px;
         }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: var(--ctp-mantle);
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            color: var(--ctp-blue);
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            border-bottom: 3px solid var(--ctp-surface0);
+            padding-bottom: 15px;
+        }
+
+        h2 {
+            color: var(--ctp-mauve);
+            font-size: 1.8em;
+            margin-top: 35px;
+            margin-bottom: 15px;
+        }
+
+        h3 {
+            color: var(--ctp-sapphire);
+            font-size: 1.3em;
+            margin-top: 25px;
+            margin-bottom: 10px;
+        }
+
+        p {
+            margin-bottom: 15px;
+            color: var(--ctp-subtext0);
+        }
+
+        .subtitle {
+            color: var(--ctp-subtext1);
+            font-size: 1.2em;
+            margin-bottom: 30px;
+        }
+
         code {
-            background: #f4f4f4;
-            padding: 2px 6px;
-            border-radius: 3px;
-        }
-        pre {
-            background: #f4f4f4;
-            padding: 15px;
+            background-color: var(--ctp-surface0);
+            color: var(--ctp-green);
+            padding: 3px 8px;
             border-radius: 5px;
-            overflow-x: auto;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.95em;
         }
-        h1 { color: #333; }
-        h2 { color: #555; margin-top: 30px; }
+
+        pre {
+            background-color: var(--ctp-crust);
+            border: 1px solid var(--ctp-surface0);
+            border-radius: 8px;
+            padding: 20px;
+            overflow-x: auto;
+            margin: 15px 0;
+        }
+
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            color: var(--ctp-text);
+            display: block;
+        }
+
+        a {
+            color: var(--ctp-blue);
+            text-decoration: none;
+            transition: color 0.2s ease;
+        }
+
+        a:hover {
+            color: var(--ctp-sapphire);
+            text-decoration: underline;
+        }
+
+        ul {
+            margin: 15px 0;
+            padding-left: 30px;
+        }
+
+        li {
+            margin: 8px 0;
+            color: var(--ctp-subtext0);
+        }
+
+        li strong {
+            color: var(--ctp-text);
+        }
+
+        .badge {
+            display: inline-block;
+            background-color: var(--ctp-surface1);
+            color: var(--ctp-text);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            margin: 5px 5px 5px 0;
+            border: 1px solid var(--ctp-surface2);
+        }
+
+        .badge.arch {
+            background-color: var(--ctp-surface0);
+            color: var(--ctp-lavender);
+        }
+
+        .note {
+            background-color: var(--ctp-surface0);
+            border-left: 4px solid var(--ctp-yellow);
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+
+        .note strong {
+            color: var(--ctp-yellow);
+        }
+
+        .footer {
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 2px solid var(--ctp-surface0);
+            text-align: center;
+            color: var(--ctp-overlay1);
+            font-size: 0.9em;
+        }
+
+        .command-comment {
+            color: var(--ctp-overlay1);
+        }
+
+        .highlight-blue { color: var(--ctp-blue); }
+        .highlight-green { color: var(--ctp-green); }
+        .highlight-yellow { color: var(--ctp-yellow); }
+        .highlight-mauve { color: var(--ctp-mauve); }
+        .highlight-peach { color: var(--ctp-peach); }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 25px;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+
+            h2 {
+                font-size: 1.5em;
+            }
+        }
     </style>
 </head>
 <body>
-    <h1>socktop APT Repository</h1>
-    <p>System monitor with remote agent support for Linux systems.</p>
+    <div class="container">
+        <h1>socktop APT Repository</h1>
+        <p class="subtitle">System monitor with remote agent support for Linux systems</p>
 
-    <h2>Adding this repository</h2>
-    <pre><code># Add the GPG key
-curl -fsSL https://jasonwitty.github.io/socktop/KEY.gpg | sudo gpg --dearmor -o /usr/share/keyrings/socktop-archive-keyring.gpg
+        <h2>📦 Quick Installation</h2>
+        <p>Add this repository to your Debian/Ubuntu system:</p>
 
-# Add the repository
-echo "deb [signed-by=/usr/share/keyrings/socktop-archive-keyring.gpg] https://jasonwitty.github.io/socktop stable main" | sudo tee /etc/apt/sources.list.d/socktop.list
+        <h3>Step 1: Add GPG Key</h3>
+        <pre><code><span class="comman</pre>d-comment"># Add the repository's GPG signing key</span>
+curl -fsSL https://YOUR-USERNAME.github.io/socktop/KEY.gpg | \
+    sudo gpg --dearmor -o /usr/share/keyrings/socktop-archive-keyring.gpg</code></pre>
 
-# Update and install
+        <h3>Step 2: Add Repository</h3>
+        <pre><code><span class="command-comment"># Add the APT repository to your sources</span>
+echo "deb [signed-by=/usr/share/keyrings/socktop-archive-keyring.gpg] https://YOUR-USERNAME.github.io/socktop stable main" | \
+    sudo tee /etc/apt/sources.list.d/socktop.list</code></pre>
+
+        <h3>Step 3: Install</h3>
+        <pre><code><span class="command-comment"># Update package lists and install</span>
 sudo apt update
 sudo apt install socktop socktop-agent</code></pre>
 
-    <h2>Manual Installation</h2>
-    <p>Download packages from <a href="pool/main/">pool/main/</a></p>
+        <h2>📋 What's Included</h2>
+        <ul>
+            <li><strong class="highlight-blue">socktop</strong> - Terminal UI client for monitoring systems</li>
+            <li><strong class="highlight-mauve">socktop-agent</strong> - Background agent that reports system metrics</li>
+        </ul>
 
-    <h2>Supported Architectures</h2>
-    <ul>
-        <li>amd64 (x86_64)</li>
-        <li>arm64 (aarch64)</li>
-        <li>armhf (32-bit ARM)</li>
-    </ul>
+        <div class="note">
+            <strong>Note:</strong> The agent package automatically installs and configures a systemd service. Enable it with:
+            <code>sudo systemctl enable --now socktop-agent</code>
+        </div>
 
-    <h2>Source Code</h2>
-    <p>Visit the <a href="https://github.com/jasonwitty/socktop">GitHub repository</a></p>
+        <h2>🏗️ Supported Architectures</h2>
+        <div>
+            <span class="badge arch">a</div>md64</span>
+            <span class="badge arch">arm64</span>
+            <span class="badge arch">armhf</span>
+        </div>
+
+        <h2>📥</h2> Manual Download</h2>
+        <p>You can also download packages directly:</p>
+        <ul>
+            <li><a href="pool/main/">Browse all packages</a></li>
+            <li><a href="packages.html">View package index</a></li>
+        </ul>
+
+        <pre><code><span class="command-comment"># Download and install manually</span>
+wget https://YOUR-USERNAME.github.io/socktop/pool/main/socktop_VERSION_ARCH.deb
+sudo dpkg -i socktop_VERSION_ARCH.deb</code></pre>
+
+        <h2>🔧 Usage</h2>
+        <p>After installation:</p>
+        <pre><code><span class="command-comment"># Start the TUI client</span>
+socktop</code>
+
+<span class="command-comment"># Connect to a remote agent</span>
+socktop --url ws://hostname:3000
+
+<span class="command-comment"># Start the agent (if not using systemd)</span>
+socktop_agent</code></pre>
+
+        <h2>🔗 Links</h2>
+        <ul>
+            <li><a href="https://github.com/YOUR-USERNAME/socktop">Source Code on GitHub</a></li>
+            <li><a href="https://github.com/YOUR-USERNAME/socktop/issues">Report Issues</a></li>
+            <li><a href="README.md">Repository Documentation</a></li>
+        </ul>
+
+        <div class="footer">
+            <p>Hosted on GitHub Pages | Packages signed with GPG</p>
+            <p>Theme: <a href="https://github.com/catppuccin/catppuccin">Catppuccin Frappe</a></p>
+        </div>
+    </div>
 </body>
 </html>
