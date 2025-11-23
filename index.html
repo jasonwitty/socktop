@@ -213,12 +213,12 @@
 
         <h3>Step 1: Add GPG Key</h3>
         <pre><code><span class="comman</pre>d-comment"># Add the repository's GPG signing key</span>
-curl -fsSL https://YOUR-USERNAME.github.io/socktop/KEY.gpg | \
+curl -fsSL https://jaosnwitty.github.io/socktop/KEY.gpg | \
     sudo gpg --dearmor -o /usr/share/keyrings/socktop-archive-keyring.gpg</code></pre>
 
         <h3>Step 2: Add Repository</h3>
         <pre><code><span class="command-comment"># Add the APT repository to your sources</span>
-echo "deb [signed-by=/usr/share/keyrings/socktop-archive-keyring.gpg] https://YOUR-USERNAME.github.io/socktop stable main" | \
+echo "deb [signed-by=/usr/share/keyrings/socktop-archive-keyring.gpg] https://jaosnwitty.github.io/socktop stable main" | \
     sudo tee /etc/apt/sources.list.d/socktop.list</code></pre>
 
         <h3>Step 3: Install</h3>
@@ -239,9 +239,10 @@ sudo apt install socktop socktop-agent</code></pre>
 
         <h2>🏗️ Supported Architectures</h2>
         <div>
-            <span class="badge arch">a</div>md64</span>
+            <span class="badge arch">amd64</span>
             <span class="badge arch">arm64</span>
             <span class="badge arch">armhf</span>
+            <span class="badge arch">riscv64</span>
         </div>
 
         <h2>📥</h2> Manual Download</h2>
@@ -252,7 +253,7 @@ sudo apt install socktop socktop-agent</code></pre>
         </ul>
 
         <pre><code><span class="command-comment"># Download and install manually</span>
-wget https://YOUR-USERNAME.github.io/socktop/pool/main/socktop_VERSION_ARCH.deb
+wget https://jasonwitty.github.io/socktop/pool/main/socktop_VERSION_ARCH.deb
 sudo dpkg -i socktop_VERSION_ARCH.deb</code></pre>
 
         <h2>🔧 Usage</h2>
@@ -268,8 +269,8 @@ socktop_agent</code></pre>
 
         <h2>🔗 Links</h2>
         <ul>
-            <li><a href="https://github.com/YOUR-USERNAME/socktop">Source Code on GitHub</a></li>
-            <li><a href="https://github.com/YOUR-USERNAME/socktop/issues">Report Issues</a></li>
+            <li><a href="https://github.com/jaosnwitty/socktop">Source Code on GitHub</a></li>
+            <li><a href="https://github.com/jaosnwitty/socktop/issues">Report Issues</a></li>
             <li><a href="README.md">Repository Documentation</a></li>
         </ul>
 
