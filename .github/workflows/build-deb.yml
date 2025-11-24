@@ -314,8 +314,19 @@ jobs:
             done
           done
 
+      - name: Set GPG available flag
+        id: check_gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Import GPG key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: steps.check_gpg.outputs.available == 'true'
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
@@ -323,7 +334,7 @@ jobs:
           gpg --list-secret-keys
 
       - name: Sign repository
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: steps.check_gpg.outputs.available == 'true'
         env:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -345,7 +356,7 @@ jobs:
           echo "✓ Repository signed"
 
       - name: Create unsigned repository notice
-        if: ${{ secrets.GPG_PRIVATE_KEY == '' }}
+        if: steps.check_gpg.outputs.available == 'false'
         run: |
           echo "⚠️  Warning: GPG_PRIVATE_KEY not set. Repository will be UNSIGNED."
           echo "⚠️  Add GPG secrets to sign the repository automatically."
