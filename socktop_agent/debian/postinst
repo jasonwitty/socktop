@@ -29,27 +29,27 @@ cat <<EOF
 ┌─────────────────────────────────────────────────────────────────────┐
 │ socktop-agent has been installed successfully!                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│ The systemd service has been installed but is NOT enabled by       │
-│ default. To enable and start the service:                          │
-│                                                                     │
-│   sudo systemctl enable --now socktop-agent                        │
-│                                                                     │
-│ To start without enabling on boot:                                 │
-│                                                                     │
-│   sudo systemctl start socktop-agent                               │
-│                                                                     │
-│ To check service status:                                           │
-│                                                                     │
-│   sudo systemctl status socktop-agent                              │
-│                                                                     │
-│ Default settings:                                                  │
-│   - Port: 3000 (use -p or --port to change)                       │
-│   - SSL/TLS: disabled (use --enableSSL to enable)                 │
-│                                                                     │
-│ For more information, see:                                         │
-│   /usr/share/doc/socktop_agent/README.md                           │
-│                                                                     │
+│                                                                      │
+│ The systemd service has been installed but is NOT enabled by        │
+│ default. To enable and start the service:                           │
+│                                                                      │
+│   sudo systemctl enable --now socktop-agent                         │
+│                                                                      │
+│ To start without enabling on boot:                                  │
+│                                                                      │
+│   sudo systemctl start socktop-agent                                │
+│                                                                      │
+│ To check service status:                                            │
+│                                                                      │
+│   sudo systemctl status socktop-agent                               │
+│                                                                      │
+│ Default settings:                                                   │
+│   - Port: 3000 (use -p or --port to change)                        │
+│   - SSL/TLS: disabled (use --enableSSL to enable)                  │
+│                                                                      │
+│ For more information, see:                                          │
+│   /usr/share/doc/socktop_agent/README.md                            │
+│                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 
 EOF
