@@ -340,16 +340,18 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           if [ -n "$GPG_PASSPHRASE" ]; then
-            echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --no-tty --pinentry-mode loopback --passphrase-fd 0 \
               --default-key "$GPG_KEY_ID" \
               -abs -o dists/stable/Release.gpg dists/stable/Release
-            echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --no-tty --pinentry-mode loopback --passphrase-fd 0 \
               --default-key "$GPG_KEY_ID" \
               --clearsign -o dists/stable/InRelease dists/stable/Release
           else
-            gpg --batch --yes --default-key "$GPG_KEY_ID" \
+            gpg --batch --yes --no-tty --pinentry-mode loopback \
+              --default-key "$GPG_KEY_ID" \
               -abs -o dists/stable/Release.gpg dists/stable/Release
-            gpg --batch --yes --default-key "$GPG_KEY_ID" \
+            gpg --batch --yes --no-tty --pinentry-mode loopback \
+              --default-key "$GPG_KEY_ID" \
               --clearsign -o dists/stable/InRelease dists/stable/Release
           fi
           gpg --armor --export "$GPG_KEY_ID" > KEY.gpg
