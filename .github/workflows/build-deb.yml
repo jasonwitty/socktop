@@ -315,7 +315,7 @@ jobs:
           done
 
       - name: Import GPG key
-        if: secrets.GPG_PRIVATE_KEY != ''
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
@@ -323,7 +323,7 @@ jobs:
           gpg --list-secret-keys
 
       - name: Sign repository
-        if: secrets.GPG_PRIVATE_KEY != ''
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -345,7 +345,7 @@ jobs:
           echo "✓ Repository signed"
 
       - name: Create unsigned repository notice
-        if: secrets.GPG_PRIVATE_KEY == ''
+        if: ${{ secrets.GPG_PRIVATE_KEY == '' }}
         run: |
           echo "⚠️  Warning: GPG_PRIVATE_KEY not set. Repository will be UNSIGNED."
           echo "⚠️  Add GPG secrets to sign the repository automatically."
