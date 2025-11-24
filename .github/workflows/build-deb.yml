@@ -226,6 +226,155 @@ jobs:
           path: all-debs/SHA256SUMS
           retention-days: 90
 
+  # Publish packages to gh-pages APT repository
+  publish-apt-repo:
+    name: Publish to APT Repository
+    needs: combine-artifacts
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          name: all-debian-packages
+          path: debs
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev gpg
+
+      - name: Checkout gh-pages branch
+        run: |
+          git fetch origin gh-pages:gh-pages || echo "gh-pages branch doesn't exist yet"
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . 2>/dev/null || true
+            # Create basic structure
+            mkdir -p dists/stable/main/{binary-amd64,binary-arm64,binary-armhf,binary-riscv64}
+            mkdir -p pool/main
+          fi
+
+      - name: Copy packages to pool
+        run: |
+          mkdir -p pool/main
+          cp debs/*.deb pool/main/
+          ls -lh pool/main/
+
+      - name: Generate Packages files
+        run: |
+          for arch in amd64 arm64 armhf riscv64; do
+            mkdir -p dists/stable/main/binary-$arch
+            dpkg-scanpackages --arch $arch pool/main /dev/null > dists/stable/main/binary-$arch/Packages 2>/dev/null || true
+            if [ -s dists/stable/main/binary-$arch/Packages ]; then
+              gzip -9 -k -f dists/stable/main/binary-$arch/Packages
+              echo "Generated Packages file for $arch"
+            fi
+          done
+
+      - name: Generate Release file
+        run: |
+          cat > dists/stable/Release << EOF
+          Origin: socktop
+          Label: socktop
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64 armhf riscv64
+          Components: main
+          Description: socktop APT repository
+          Date: $(date -Ru)
+          EOF
+
+          # Add MD5Sum
+          echo "MD5Sum:" >> dists/stable/Release
+          for arch in amd64 arm64 armhf riscv64; do
+            for file in dists/stable/main/binary-$arch/Packages*; do
+              if [ -f "$file" ]; then
+                md5sum "$file" | awk '{print " " $1, "'$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)'", "'"${file#dists/stable/}"'"}' >> dists/stable/Release
+              fi
+            done
+          done
+
+          # Add SHA256
+          echo "SHA256:" >> dists/stable/Release
+          for arch in amd64 arm64 armhf riscv64; do
+            for file in dists/stable/main/binary-$arch/Packages*; do
+              if [ -f "$file" ]; then
+                sha256sum "$file" | awk '{print " " $1, "'$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)'", "'"${file#dists/stable/}"'"}' >> dists/stable/Release
+              fi
+            done
+          done
+
+      - name: Import GPG key
+        if: secrets.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys
+
+      - name: Sign repository
+        if: secrets.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
+              --default-key "$GPG_KEY_ID" \
+              -abs -o dists/stable/Release.gpg dists/stable/Release
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
+              --default-key "$GPG_KEY_ID" \
+              --clearsign -o dists/stable/InRelease dists/stable/Release
+          else
+            gpg --batch --yes --default-key "$GPG_KEY_ID" \
+              -abs -o dists/stable/Release.gpg dists/stable/Release
+            gpg --batch --yes --default-key "$GPG_KEY_ID" \
+              --clearsign -o dists/stable/InRelease dists/stable/Release
+          fi
+          gpg --armor --export "$GPG_KEY_ID" > KEY.gpg
+          echo "✓ Repository signed"
+
+      - name: Create unsigned repository notice
+        if: secrets.GPG_PRIVATE_KEY == ''
+        run: |
+          echo "⚠️  Warning: GPG_PRIVATE_KEY not set. Repository will be UNSIGNED."
+          echo "⚠️  Add GPG secrets to sign the repository automatically."
+          echo "To add secrets: Settings → Secrets and variables → Actions → Repository secrets"
+
+      - name: Copy index.html if exists
+        run: |
+          git checkout ${{ github.ref_name }} -- index.html 2>/dev/null || echo "No index.html in source branch"
+
+      - name: Commit and push to gh-pages
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            COMMIT_MSG="Update APT repository"
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              COMMIT_MSG="$COMMIT_MSG - Release ${{ github.ref_name }}"
+            else
+              COMMIT_MSG="$COMMIT_MSG - $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            fi
+            git commit -m "$COMMIT_MSG"
+            git push origin gh-pages
+            echo "✓ Published to gh-pages"
+          fi
+
   # Optional: Create a release with the .deb files if this is a tag
   create-release:
     name: Create GitHub Release
