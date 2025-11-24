@@ -5,28 +5,39 @@ Origin: socktop
 Label: socktop
 Suite: stable
 Codename: stable
-Architectures: amd64 arm64 armhf
+Architectures: amd64 arm64 armhf riscv64
 Components: main
 Description: socktop APT repository
-Date: Sun, 23 Nov 2025 04:05:21 +0000
+Date: Mon, 24 Nov 2025 20:01:32 +0000
 MD5Sum:
- 0bddefb2f13cb7c86cd05fe1ce20310f 1549 main/binary-amd64/Packages
- 674f0e552cbb7dc65380651a2a8d279e 799 main/binary-amd64/Packages.gz
+ 0b1110782420dd7941940d8f99adda34 1627 main/binary-amd64/Packages
+ 7c1447cf37137d7a72534cea3cb3872f 836 main/binary-amd64/Packages.gz
+ 1e8f176ddd62df4bed3d11aa9673d5f1 1627 main/binary-arm64/Packages
+ 165f010f2f2e85775e602bbfc32b9a67 832 main/binary-arm64/Packages.gz
+ 0c17d836ddf76547285336b1a9948daf 1610 main/binary-armhf/Packages
+ 6ee29ba21442c21c3a1ad89aaa1bcdf6 820 main/binary-armhf/Packages.gz
+ 1fc7e24923a509ea722c2d0d5189700a 1623 main/binary-riscv64/Packages
+ 6fc7db17b307382c4042cd7fab03010a 820 main/binary-riscv64/Packages.gz
 SHA256:
- babfbb4839e7fdfbc83742c16996791b0402a1315889b530330b338380398263 1549 main/binary-amd64/Packages
- f8c48d0f7bf53eb02c6dbf5f1cdd046fe71b87273cf763c5bb2e95d9757a7a82 799 main/binary-amd64/Packages.gz
-
+ eb77b0c29f6d909a0e26596ff5c897ad32c45fa0c95d14f435e68264e2f02024 1627 main/binary-amd64/Packages
+ e045e3303e653094ad828aa11adb0fd7194f2fe422b99cd0ee0a1c2100d86544 836 main/binary-amd64/Packages.gz
+ 7054a62c0a4cdda4be5a264809c358a83f8323b388d43880d73557588c20fe15 1627 main/binary-arm64/Packages
+ d87f2cc66015a7d6f7b6755330af0003fa444d27229eb6127df00ab847b9cd53 832 main/binary-arm64/Packages.gz
+ d17d55bd46dc1955b09615b3bb7ce009f34e277b1b11e131b340afc77157e554 1610 main/binary-armhf/Packages
+ 53e37cd254c6f96272f7b9f83e2ad86e2013be1a3e4061a35592c795102aa087 820 main/binary-armhf/Packages.gz
+ a43bb5de1b4b43fbd02e141db8c0134558b4750f9c2835f468cb731701103ba6 1623 main/binary-riscv64/Packages
+ 1d0be4332d0794b3a25ea81774690030276fb791f47eaf07758041183079807d 820 main/binary-riscv64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQGzBAEBCgAdFiEEHnVWqAU5uDlLwoINESwaeYRl+/IFAmkiiAYACgkQESwaeYRl
-+/KBsAv/eYhnK/XrNtPhLyw/zX2cGfUtBsBZrypFhV/n+TvudAIwQaqxDEvLlBUn
-HBAhMKDQXGs7V45+nOgDX4rKWUqJh4SPbJgNbVte2PX7U+hsMpZBsYp3vkjApgTO
-pq2CCkViyBXgTY+6vUigtvfJ9afTTWI6Qm4dLXZ7hxErBxgHQyowOoO/sF92cNOu
-AosBMpE+qSy7sVqJU5g/JXJh0kddKFotXHSGA1kFMzJafJC/n5nLrusDzFJRQqyH
-Io+6inYWjlb5o79z0tJzAvG1mgplLRppMBjoVJ/RJ+gT+QE70kokR6wvsgDqsKNd
-mvB0TNj0zY0g6Is6V3XMyf0u+6BtLTbua913HPiqBfErgeV58vzsst+y0It42TXi
-aw+UF2Kw/YhPq1rZFxgnAVcMja3qlXWpH57gmgIPovBCsPsiywWiHLsSHRzAI22b
-zeTsUST/4toR/ruZVbUZvWoWAR4tzsSuwXJFx/hhinTQQTNHErXASOX986UaL9L7
-o2/pTKLe
-=IeBY
+iQGzBAEBCgAdFiEEHnVWqAU5uDlLwoINESwaeYRl+/IFAmkkuZ4ACgkQESwaeYRl
++/LaawwAv9CIkkuqc7bvgyLNNVf2GEi0UV3I/DBg0YX47gKI2u4wp760sf53BYkk
+wmYZkPcQFFAICVEY7j/WqvnRBkNb67sF7eS4p14IW9UB4GAMs5U0k6737VIwp47G
+AUbuqZKv3kRk/x7XeZgmqnipXtSqlfVct2dx1+53yGqnwdSywpU9Ns64Iod4/lLQ
+ipXkKOmb+SdGM90uv4lQ+BdleRykqb8cC761LKJEYZEByUal95woBW8cp9EycJXu
+yqqAX21Bgx8YC7aF0Z61e9BYlUGXnxFwz4pn0hwvLli8X5dJEdUxWnuto+b/5HAk
+ql7gicDHfxOKOUv2qQFsShsybJm4axWMBqMudDohZTtylfp0rgAQX8Tr6U1u303a
+1kmU8v0Ph/XOfZT1gGnHfEn6RlOmDfaSRqcF2USyZTzrPgo9g8EKCiBuZm+Som9a
+VjQmvdRHiJ0K84bfNpjFW4aJo0xE2EQR7xS/RXCA0SQ9YhFrxBxYr5TxWM0N0C6j
+LCsp4O4A
+=Jzma
 -----END PGP SIGNATURE-----
