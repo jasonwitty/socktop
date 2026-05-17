@@ -419,7 +419,7 @@ impl ModalManager {
         )
         .header(header)
         .block(block)
-        .highlight_style(Style::default());
+        .row_highlight_style(Style::default());
 
         f.render_widget(table, area);
 

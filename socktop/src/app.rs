@@ -465,7 +465,10 @@ impl App {
         _url: &str,
         _tls_ca: Option<&str>,
         _verify_hostname: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Handle input for modal
             while event::poll(Duration::from_millis(10))? {
@@ -572,7 +575,10 @@ impl App {
         &mut self,
         terminal: &mut Terminal<B>,
         mut ws: SocktopConnector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Main event loop
             let result = self.run_event_loop_iteration(terminal, &mut ws).await;
@@ -592,7 +598,10 @@ impl App {
         &mut self,
         terminal: &mut Terminal<B>,
         ws: &mut SocktopConnector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Input (non-blocking)
             while event::poll(Duration::from_millis(10))? {
