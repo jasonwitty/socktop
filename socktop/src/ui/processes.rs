@@ -425,16 +425,15 @@ pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
             }
             true // Handled
         }
-        KeyCode::Char('x') | KeyCode::Char('X') => {
-            // Unselect any selected process
-            if params.selected_process_pid.is_some() || params.selected_process_index.is_some() {
-                *params.selected_process_pid = None;
-                *params.selected_process_index = None;
-                true // Handled
-            } else {
-                false // No selection to clear
-            }
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if params.selected_process_pid.is_some()
+                || params.selected_process_index.is_some() =>
+        {
+            *params.selected_process_pid = None;
+            *params.selected_process_index = None;
+            true
         }
+        KeyCode::Char('x') | KeyCode::Char('X') => false,
         KeyCode::Enter => {
             // Signal that Enter was pressed with a selection
             params.selected_process_pid.is_some() // Return true if we have a selection to handle
