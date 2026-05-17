@@ -41,11 +41,13 @@ impl ModalManager {
             ])
             .split(area);
         let block = Block::default()
-            .title(Line::from(ICON_WARNING_TITLE).style(
-                Style::default()
-                    .fg(MODAL_TITLE_FG)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            .title(
+                Line::from(ICON_WARNING_TITLE).style(
+                    Style::default()
+                        .fg(MODAL_TITLE_FG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(MODAL_BORDER_FG))
             .style(Style::default().bg(MODAL_BG).fg(MODAL_FG));
