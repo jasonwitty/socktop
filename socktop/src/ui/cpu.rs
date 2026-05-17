@@ -133,11 +133,9 @@ pub fn per_core_handle_scrollbar_mouse(
     }
     let thumb_len = (track * view).div_ceil(total).max(1).min(track);
     let top_for_offset = |off: usize| -> usize {
-        if max_off == 0 {
-            0
-        } else {
-            ((track - thumb_len) * off + max_off / 2) / max_off
-        }
+        ((track - thumb_len) * off + max_off / 2)
+            .checked_div(max_off)
+            .unwrap_or(0)
     };
     let thumb_top = top_for_offset(offset);
 
@@ -190,11 +188,9 @@ pub fn per_core_handle_scrollbar_mouse(
                 // Inverse mapping top -> offset
                 if track > thumb_len {
                     let denom = track - thumb_len;
-                    offset = if max_off == 0 {
-                        0
-                    } else {
-                        (new_top * max_off + denom / 2) / denom
-                    };
+                    offset = (new_top * max_off + denom / 2)
+                        .checked_div(denom)
+                        .unwrap_or(0);
                 } else {
                     offset = 0;
                 }
@@ -411,11 +407,9 @@ pub fn draw_per_core_bars(
         let max_off = total.saturating_sub(view);
 
         let thumb_len = (track * view).div_ceil(total).max(1).min(track);
-        let thumb_top = if max_off == 0 {
-            0
-        } else {
-            ((track - thumb_len) * offset + max_off / 2) / max_off
-        };
+        let thumb_top = ((track - thumb_len) * offset + max_off / 2)
+            .checked_div(max_off)
+            .unwrap_or(0);
 
         // Build lines: top arrow, track (with thumb), bottom arrow
         let mut lines: Vec<Line> = Vec::with_capacity(scroll_area.height as usize);

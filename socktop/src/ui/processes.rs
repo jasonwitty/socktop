@@ -307,11 +307,9 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
         let max_off = total.saturating_sub(view);
 
         let thumb_len = (track * view).div_ceil(total).max(1).min(track);
-        let thumb_top = if max_off == 0 {
-            0
-        } else {
-            ((track - thumb_len) * offset + max_off / 2) / max_off
-        };
+        let thumb_top = ((track - thumb_len) * offset + max_off / 2)
+            .checked_div(max_off)
+            .unwrap_or(0);
 
         // Build lines: top arrow, track (with thumb), bottom arrow
         let mut lines: Vec<Line> = Vec::with_capacity(scroll_area.height as usize);
