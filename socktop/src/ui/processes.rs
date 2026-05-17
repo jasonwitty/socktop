@@ -426,8 +426,7 @@ pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
             true // Handled
         }
         KeyCode::Char('x') | KeyCode::Char('X')
-            if params.selected_process_pid.is_some()
-                || params.selected_process_index.is_some() =>
+            if params.selected_process_pid.is_some() || params.selected_process_index.is_some() =>
         {
             *params.selected_process_pid = None;
             *params.selected_process_index = None;
