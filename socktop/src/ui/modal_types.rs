@@ -5,6 +5,8 @@ use std::time::Instant;
 /// History data for process metrics rendering
 pub struct ProcessHistoryData<'a> {
     pub cpu: &'a std::collections::VecDeque<f32>,
+    /// Running sum of `cpu` maintained by the caller (avoids re-summing per frame)
+    pub cpu_sum: f32,
     pub mem: &'a std::collections::VecDeque<u64>,
     pub io_read: &'a std::collections::VecDeque<u64>,
     pub io_write: &'a std::collections::VecDeque<u64>,

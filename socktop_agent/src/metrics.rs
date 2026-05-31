@@ -23,45 +23,40 @@ use tracing::warn;
 
 // NOTE: CPU normalization env removed; non-Linux now always reports per-process share (0..100) as given by sysinfo.
 
-// Helper functions to get CPU time from /proc/stat on Linux
+// Read (utime, stime) in milliseconds from /proc/{pid}/stat in one go.
+// Returns (0, 0) if the file can't be read.
+//
+// We use `rfind(')')` to step past the `comm` field, which can contain
+// arbitrary characters (including spaces and parens), then index the
+// post-comm fields by position. This is the same trick `read_proc_jiffies`
+// uses below — `split_whitespace().collect::<Vec<_>>()` from the start of
+// the file would mis-parse process names with spaces, and also wastes an
+// allocation per call. Two callers used to read this file twice (once for
+// user, once for system); now it's one syscall per detailed-process record.
 #[cfg(target_os = "linux")]
-fn get_cpu_time_user(pid: u32) -> u64 {
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        let fields: Vec<&str> = stat.split_whitespace().collect();
-        if fields.len() > 13 {
-            // Field 13 (0-indexed) is utime (user CPU time in clock ticks)
-            if let Ok(utime) = fields[13].parse::<u64>() {
-                // Convert clock ticks to milliseconds (assuming 100 Hz)
-                return utime * 10; // 1 tick = 10ms at 100 Hz
-            }
-        }
-    }
-    0
-}
-
-#[cfg(target_os = "linux")]
-fn get_cpu_time_system(pid: u32) -> u64 {
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        let fields: Vec<&str> = stat.split_whitespace().collect();
-        if fields.len() > 14 {
-            // Field 14 (0-indexed) is stime (system CPU time in clock ticks)
-            if let Ok(stime) = fields[14].parse::<u64>() {
-                // Convert clock ticks to milliseconds (assuming 100 Hz)
-                return stime * 10; // 1 tick = 10ms at 100 Hz
-            }
-        }
-    }
-    0
+fn get_cpu_times_ms(pid: u32) -> (u64, u64) {
+    let Ok(s) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return (0, 0);
+    };
+    let Some(rpar) = s.rfind(')') else {
+        return (0, 0);
+    };
+    let Some(after) = s.get(rpar + 2..) else {
+        return (0, 0);
+    };
+    let mut it = after.split_whitespace();
+    // Post-comm field offsets: state, ppid, pgrp, session, tty_nr, tpgid,
+    // flags, minflt, cminflt, majflt, cmajflt, utime, stime, ...
+    // utime is offset 11; stime follows.
+    let utime = it.nth(11).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let stime = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    // 1 tick = 10ms at 100 Hz (USER_HZ).
+    (utime * 10, stime * 10)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn get_cpu_time_user(_pid: u32) -> u64 {
-    0 // Not implemented for non-Linux platforms
-}
-
-#[cfg(not(target_os = "linux"))]
-fn get_cpu_time_system(_pid: u32) -> u64 {
-    0 // Not implemented for non-Linux platforms
+fn get_cpu_times_ms(_pid: u32) -> (u64, u64) {
+    (0, 0)
 }
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
@@ -81,6 +76,46 @@ fn temp_enabled() -> bool {
     })
 }
 
+// TTL knobs read once at first use, then cached. These hit the hot polling
+// paths (every 250ms-1.5s), so re-reading via libc getenv per call is wasted.
+fn metrics_ttl_ms() -> u64 {
+    static V: OnceCell<u64> = OnceCell::new();
+    *V.get_or_init(|| {
+        std::env::var("SOCKTOP_AGENT_METRICS_TTL_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(250)
+    })
+}
+fn disks_ttl_ms() -> u64 {
+    static V: OnceCell<u64> = OnceCell::new();
+    *V.get_or_init(|| {
+        std::env::var("SOCKTOP_AGENT_DISKS_TTL_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_000)
+    })
+}
+fn processes_ttl_ms() -> u64 {
+    static V: OnceCell<u64> = OnceCell::new();
+    *V.get_or_init(|| {
+        std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_500)
+    })
+}
+#[cfg(not(target_os = "linux"))]
+fn name_cache_cleanup_threshold() -> usize {
+    static V: OnceCell<usize> = OnceCell::new();
+    *V.get_or_init(|| {
+        std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000)
+    })
+}
+
 // Tiny TTL caches to avoid rescanning sensors every 500ms
 const TTL: Duration = Duration::from_millis(1500);
 struct TempCache {
@@ -88,6 +123,32 @@ struct TempCache {
     v: Option<f32>,
 }
 static TEMP: OnceCell<Mutex<TempCache>> = OnceCell::new();
+
+// Last time `state.components` was refreshed (by any caller). Both
+// collect_fast_metrics and collect_disks need fresh sensor values; without
+// this gate they were each doing their own `Components::refresh` on their
+// own cadence, paying the hwmon syscall cost twice per polling cycle.
+// 1s is short enough that disk temps stay accurate (they change slowly) and
+// long enough to suppress back-to-back refreshes from concurrent endpoints.
+const COMPONENTS_REFRESH_TTL: Duration = Duration::from_millis(1000);
+static COMPONENTS_LAST_REFRESH: OnceCell<Mutex<Option<Instant>>> = OnceCell::new();
+
+/// Refresh `state.components` only if the cached refresh timestamp is older
+/// than `COMPONENTS_REFRESH_TTL`. Caller must already hold the components
+/// lock.
+fn refresh_components_if_stale(components: &mut sysinfo::Components) {
+    let lock = COMPONENTS_LAST_REFRESH.get_or_init(|| Mutex::new(None));
+    let mut last = match lock.lock() {
+        Ok(g) => g,
+        Err(_) => return, // Poisoned — skip; values stay as-is until next call
+    };
+    let now = Instant::now();
+    let stale = last.is_none_or(|t| now.duration_since(t) >= COMPONENTS_REFRESH_TTL);
+    if stale {
+        components.refresh(false);
+        *last = Some(now);
+    }
+}
 
 struct GpuCache {
     at: Option<Instant>,
@@ -154,12 +215,7 @@ fn set_gpus(v: Option<Vec<crate::gpu::GpuMetrics>>) {
 
 // Collect only fast-changing metrics (CPU/mem/net + optional temps/gpus).
 pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
-    // TTL (ms) overridable via env, default 250ms
-    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_METRICS_TTL_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(250);
-    let ttl = StdDuration::from_millis(ttl_ms);
+    let ttl = StdDuration::from_millis(metrics_ttl_ms());
     {
         let cache = state.cache_metrics.lock().await;
         if cache.is_fresh(ttl)
@@ -202,7 +258,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
     } else if temp_enabled() {
         let val = {
             let mut components = state.components.lock().await;
-            components.refresh(false);
+            refresh_components_if_stale(&mut components);
             components.iter().find_map(|c| {
                 let l = c.label().to_ascii_lowercase();
                 if l.contains("cpu")
@@ -236,12 +292,19 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         });
         let mut cache = cache.lock().unwrap();
 
-        // Collect current network names
-        let current_names: Vec<_> = nets.keys().map(|name| name.to_string()).collect();
-
-        // Update cached network names if they changed
-        if cache.names != current_names {
-            cache.names = current_names;
+        // Detect a topology change without allocating: compare lengths first,
+        // then zip and walk. Only on a real diff do we materialize the new
+        // names list. Was: `nets.keys().map(to_string).collect::<Vec<_>>()`
+        // every tick — a fresh Vec<String> just to compare.
+        let topology_changed = cache.names.len() != nets.keys().count()
+            || cache
+                .names
+                .iter()
+                .zip(nets.keys())
+                .any(|(cached, current)| cached.as_str() != current.as_str());
+        if topology_changed {
+            cache.names.clear();
+            cache.names.extend(nets.keys().map(|n| n.to_string()));
         }
 
         // Reuse NetworkInfo objects
@@ -319,11 +382,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
 
 // Cached disks
 pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
-    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_DISKS_TTL_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1_000);
-    let ttl = StdDuration::from_millis(ttl_ms);
+    let ttl = StdDuration::from_millis(disks_ttl_ms());
     {
         let cache = state.cache_disks.lock().await;
         if cache.is_fresh(ttl)
@@ -339,7 +398,9 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
     // NVMe temps show up as "Composite" under different chip names
     let disk_temps = {
         let mut components = state.components.lock().await;
-        components.refresh(true); // true = refresh values, not just the list
+        // Shared TTL-gated refresh: avoids paying the hwmon scan twice when
+        // both endpoints converge in the same second.
+        refresh_components_if_stale(&mut components);
 
         let mut composite_temps = Vec::new();
 
@@ -572,12 +633,7 @@ fn read_proc_jiffies(pid: u32) -> Option<u64> {
 /// Collect all processes (Linux): compute CPU% via /proc jiffies delta; sorting moved to client.
 #[cfg(target_os = "linux")]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    let ttl_ms: u64 = std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        // Higher default (1500ms) on non-Linux only; keep 1500 here for Linux correctness (more frequent updates).
-        .unwrap_or(1_500);
-    let ttl = StdDuration::from_millis(ttl_ms);
+    let ttl = StdDuration::from_millis(processes_ttl_ms());
     {
         let cache = state.cache_processes.lock().await;
         if cache.is_fresh(ttl)
@@ -586,13 +642,18 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             return c.clone();
         }
     }
-    // Reuse shared System to avoid reallocation; refresh processes fully.
+    // Reuse shared System to avoid reallocation. We only need name + memory
+    // from sysinfo here — per-process CPU% is computed below from /proc/{pid}/stat
+    // jiffies (see `read_proc_jiffies` + `read_total_jiffies`), so asking sysinfo
+    // to gather CPU/exe/cmd/cwd/env per process is wasted /proc traffic on a Pi
+    // (was reading /proc/{pid}/{cmdline,exe,cwd,environ,io,status} for every PID
+    // on every 2 s poll via `everything()`).
     let mut sys_guard = state.sys.lock().await;
     let sys = &mut *sys_guard;
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         false,
-        ProcessRefreshKind::everything().without_tasks(),
+        ProcessRefreshKind::nothing().with_memory(),
     );
 
     let total_count = sys.processes().len();
@@ -607,36 +668,50 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     }
     let total_now = read_total_jiffies().unwrap_or(0);
 
-    // Compute deltas vs last sample
-    let (last_total, mut last_map) = {
-        #[cfg(target_os = "linux")]
-        {
-            let mut t = state.proc_cpu.lock().await;
-            let lt = t.last_total;
-            let lm = std::mem::take(&mut t.last_per_pid);
-            t.last_total = total_now;
-            t.last_per_pid = current.clone();
-            (lt, lm)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _: u64 = total_now; // silence unused warning
-            (0u64, HashMap::new())
-        }
-    };
+    // Compute deltas vs last sample. We hold the proc_cpu lock for the whole
+    // collection below so we can read+update the per-pid name cache in one
+    // critical section.
+    let mut tracker = state.proc_cpu.lock().await;
+    let last_total = tracker.last_total;
+    // Move the old per-pid jiffies map out for delta computation.
+    let mut last_map = std::mem::take(&mut tracker.last_per_pid);
+    tracker.last_total = total_now;
 
-    // On first run or if total delta is tiny, report zeros
+    // Resolve a name through the per-pid cache. Allocates only on miss.
+    let resolve_name =
+        |tracker: &mut crate::state::ProcCpuTracker, pid: u32, p: &sysinfo::Process| -> String {
+            if let Some(cached) = tracker.names.get(&pid) {
+                return cached.clone();
+            }
+            let new_name = p.name().to_string_lossy().into_owned();
+            tracker.names.insert(pid, new_name.clone());
+            new_name
+        };
+
+    // On first run or if total delta is tiny, report zeros.
     if last_total == 0 || total_now <= last_total {
-        let procs: Vec<ProcessInfo> = sys
-            .processes()
-            .values()
-            .map(|p| ProcessInfo {
-                pid: p.pid().as_u32(),
-                name: p.name().to_string_lossy().into_owned(),
+        let mut procs: Vec<ProcessInfo> = Vec::with_capacity(total_count);
+        for p in sys.processes().values() {
+            let pid = p.pid().as_u32();
+            let name = resolve_name(&mut tracker, pid, p);
+            procs.push(ProcessInfo {
+                pid,
+                name,
                 cpu_usage: 0.0,
                 mem_bytes: p.memory(),
-            })
-            .collect();
+            });
+        }
+        // Stash the just-collected jiffies for next call's delta, then prune
+        // dead pids from the name cache. Borrowing dance: retain reads
+        // `tracker.last_per_pid` through the closure, which conflicts with
+        // the mutable borrow of `tracker.names.retain`. Split via split-borrow:
+        tracker.last_per_pid = current;
+        let crate::state::ProcCpuTracker {
+            ref last_per_pid,
+            ref mut names,
+            ..
+        } = *tracker;
+        names.retain(|pid, _| last_per_pid.contains_key(pid));
         return ProcessesPayload {
             process_count: total_count,
             top_processes: procs,
@@ -645,23 +720,31 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 
     let dt = total_now.saturating_sub(last_total).max(1) as f32;
 
-    let procs: Vec<ProcessInfo> = sys
-        .processes()
-        .values()
-        .map(|p| {
-            let pid = p.pid().as_u32();
-            let now = current.get(&pid).copied().unwrap_or(0);
-            let prev = last_map.remove(&pid).unwrap_or(0);
-            let du = now.saturating_sub(prev) as f32;
-            let cpu = ((du / dt) * 100.0).clamp(0.0, 100.0);
-            ProcessInfo {
-                pid,
-                name: p.name().to_string_lossy().into_owned(),
-                cpu_usage: cpu,
-                mem_bytes: p.memory(),
-            }
-        })
-        .collect();
+    let mut procs: Vec<ProcessInfo> = Vec::with_capacity(total_count);
+    for p in sys.processes().values() {
+        let pid = p.pid().as_u32();
+        let now = current.get(&pid).copied().unwrap_or(0);
+        let prev = last_map.remove(&pid).unwrap_or(0);
+        let du = now.saturating_sub(prev) as f32;
+        let cpu = ((du / dt) * 100.0).clamp(0.0, 100.0);
+        let name = resolve_name(&mut tracker, pid, p);
+        procs.push(ProcessInfo {
+            pid,
+            name,
+            cpu_usage: cpu,
+            mem_bytes: p.memory(),
+        });
+    }
+    // Save current jiffies map for next call and prune dead pids from the
+    // name cache. `current` is moved here (no clone — that's also #19).
+    tracker.last_per_pid = current;
+    let crate::state::ProcCpuTracker {
+        ref last_per_pid,
+        ref mut names,
+        ..
+    } = *tracker;
+    names.retain(|pid, _| last_per_pid.contains_key(pid));
+    drop(tracker);
 
     let payload = ProcessesPayload {
         process_count: total_count,
@@ -749,11 +832,8 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         //         .unwrap_or(std::cmp::Ordering::Equal)
         // });
 
-        // Clean up old process names cache when it grows too large
-        let cache_cleanup_threshold = std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000); // Default: most modern systems have 400-700 processes
+        // Clean up old process names cache when it grows too large.
+        let cache_cleanup_threshold = name_cache_cleanup_threshold();
 
         if total_count > proc_cache.names.len() + cache_cleanup_threshold {
             let now = std::time::Instant::now();
@@ -811,17 +891,94 @@ fn enumerate_child_processes_lightweight(
     children
 }
 
+/// Single-read extraction of the /proc/{pid}/status fields the detail
+/// endpoint cares about. Callers used to open this file twice per
+/// detail-process record (once for VmRSS/VmSize, once for Uid/Gid/Threads/
+/// State); now it's one read + one scan.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct ProcStatus {
+    rss_kb: u64,
+    vsize_kb: u64,
+    uid: u32,
+    gid: u32,
+    threads: u32,
+    /// Raw status letter from `State:` (e.g. 'R', 'S'). '?' if missing.
+    state_ch: char,
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_status(pid: u32) -> Option<ProcStatus> {
+    let content = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let mut out = ProcStatus {
+        state_ch: '?',
+        ..Default::default()
+    };
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("VmRSS:") {
+            out.rss_kb = v
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("VmSize:") {
+            out.vsize_kb = v
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("Uid:") {
+            out.uid = v
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("Gid:") {
+            out.gid = v
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("Threads:") {
+            out.threads = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("State:") {
+            out.state_ch = v.trim().chars().next().unwrap_or('?');
+        }
+    }
+    Some(out)
+}
+
+#[cfg(target_os = "linux")]
+fn proc_state_label(c: char) -> &'static str {
+    match c {
+        'R' => "Running",
+        'S' => "Sleeping",
+        'D' => "Disk Sleep",
+        'Z' => "Zombie",
+        'T' => "Stopped",
+        't' => "Tracing Stop",
+        'X' | 'x' => "Dead",
+        'K' => "Wakekill",
+        'W' => "Waking",
+        'P' => "Parked",
+        'I' => "Idle",
+        _ => "Unknown",
+    }
+}
+
 /// Read parent PID from /proc/{pid}/stat
 #[cfg(target_os = "linux")]
 fn read_parent_pid_from_proc(pid: u32) -> Option<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Format: pid (comm) state ppid ...
-    // We need to handle process names with spaces/parentheses
+    // Format: pid (comm) state ppid ... — comm can contain spaces/parens,
+    // so we step past the closing paren first.
     let ppid_start = stat.rfind(')')?;
-    let fields: Vec<&str> = stat[ppid_start + 1..].split_whitespace().collect();
-    // After the closing paren: state ppid ...
-    // Field 1 (0-indexed) is ppid
-    fields.get(1)?.parse::<u32>().ok()
+    // After ") ": state, ppid, ... — ppid is the second field.
+    stat[ppid_start + 1..]
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u32>()
+        .ok()
 }
 
 /// Collect process information from /proc files
@@ -830,8 +987,11 @@ fn collect_process_info_from_proc(
     pid: u32,
     system: &sysinfo::System,
 ) -> Option<DetailedProcessInfo> {
-    // Try to get basic info from sysinfo if it's already loaded (cheap lookup)
-    // Otherwise read from /proc directly
+    // One read of /proc/{pid}/status gets us everything the detail endpoint
+    // needs from it: memory (when not in sysinfo cache), Uid/Gid, Threads,
+    // and State. The previous code opened this file twice per process record.
+    let st = read_proc_status(pid)?;
+
     let (name, cpu_usage, mem_bytes, virtual_mem_bytes) =
         if let Some(proc) = system.process(sysinfo::Pid::from_u32(pid)) {
             (
@@ -841,30 +1001,13 @@ fn collect_process_info_from_proc(
                 proc.virtual_memory(),
             )
         } else {
-            // Process not in sysinfo cache, read minimal info from /proc
+            // Process not in sysinfo cache — derive name from /proc/{pid}/comm
+            // and memory from the status read above.
             let name = fs::read_to_string(format!("/proc/{pid}/comm"))
                 .ok()?
                 .trim()
                 .to_string();
-
-            // Read memory from /proc/{pid}/status
-            let status_content = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-            let mut mem_bytes = 0u64;
-            let mut virtual_mem_bytes = 0u64;
-
-            for line in status_content.lines() {
-                if let Some(value) = line.strip_prefix("VmRSS:") {
-                    if let Some(kb) = value.split_whitespace().next() {
-                        mem_bytes = kb.parse::<u64>().unwrap_or(0) * 1024;
-                    }
-                } else if let Some(value) = line.strip_prefix("VmSize:")
-                    && let Some(kb) = value.split_whitespace().next()
-                {
-                    virtual_mem_bytes = kb.parse::<u64>().unwrap_or(0) * 1024;
-                }
-            }
-
-            (name, 0.0, mem_bytes, virtual_mem_bytes)
+            (name, 0.0, st.rss_kb * 1024, st.vsize_kb * 1024)
         };
 
     // Read command line
@@ -873,54 +1016,21 @@ fn collect_process_info_from_proc(
         .map(|s| s.replace('\0', " ").trim().to_string())
         .unwrap_or_default();
 
-    // Read status information
-    let status_content = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let mut uid = 0u32;
-    let mut gid = 0u32;
-    let mut thread_count = 0u32;
-    let mut status = "Unknown".to_string();
+    let uid = st.uid;
+    let gid = st.gid;
+    let thread_count = st.threads;
+    let status = proc_state_label(st.state_ch).to_string();
 
-    for line in status_content.lines() {
-        if let Some(value) = line.strip_prefix("Uid:") {
-            if let Some(uid_str) = value.split_whitespace().next() {
-                uid = uid_str.parse().unwrap_or(0);
-            }
-        } else if let Some(value) = line.strip_prefix("Gid:") {
-            if let Some(gid_str) = value.split_whitespace().next() {
-                gid = gid_str.parse().unwrap_or(0);
-            }
-        } else if let Some(value) = line.strip_prefix("Threads:") {
-            thread_count = value.trim().parse().unwrap_or(0);
-        } else if let Some(value) = line.strip_prefix("State:") {
-            status = value
-                .trim()
-                .chars()
-                .next()
-                .map(|c| match c {
-                    'R' => "Running",
-                    'S' => "Sleeping",
-                    'D' => "Disk Sleep",
-                    'Z' => "Zombie",
-                    'T' => "Stopped",
-                    't' => "Tracing Stop",
-                    'X' | 'x' => "Dead",
-                    'K' => "Wakekill",
-                    'W' => "Waking",
-                    'P' => "Parked",
-                    'I' => "Idle",
-                    _ => "Unknown",
-                })
-                .unwrap_or("Unknown")
-                .to_string();
-        }
-    }
-
-    // Read start time from stat
+    // Read start time from stat — comm-safe via rfind(')').
     let start_time = if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
         let stat_end = stat.rfind(')')?;
-        let fields: Vec<&str> = stat[stat_end + 1..].split_whitespace().collect();
-        // Field 19 (0-indexed) is starttime in clock ticks since boot
-        fields.get(19)?.parse::<u64>().ok()?
+        // After ") ": state, ppid, ..., starttime — starttime is the 20th
+        // post-comm field (index 19).
+        stat[stat_end + 1..]
+            .split_whitespace()
+            .nth(19)?
+            .parse::<u64>()
+            .ok()?
     } else {
         0
     };
@@ -954,6 +1064,9 @@ fn collect_process_info_from_proc(
         .ok()
         .map(|p| p.to_string_lossy().to_string());
 
+    // One read of /proc/{pid}/stat covers both user + system CPU times.
+    let (cpu_time_user, cpu_time_system) = get_cpu_times_ms(pid);
+
     Some(DetailedProcessInfo {
         pid,
         name,
@@ -969,8 +1082,8 @@ fn collect_process_info_from_proc(
         user_id: uid,
         group_id: gid,
         start_time,
-        cpu_time_user: get_cpu_time_user(pid),
-        cpu_time_system: get_cpu_time_system(pid),
+        cpu_time_user,
+        cpu_time_system,
         read_bytes,
         write_bytes,
         working_directory,
@@ -1059,22 +1172,24 @@ fn collect_thread_info(pid: u32) -> Vec<crate::types::ThreadInfo> {
             .trim()
             .to_string();
 
-        // Read thread stat for CPU times and status
+        // Read thread stat for CPU times and status.
         let stat_path = format!("/proc/{pid}/task/{tid}/stat");
         let Ok(stat_content) = fs::read_to_string(&stat_path) else {
             continue;
         };
 
-        // Parse stat file (similar format to process stat)
-        // Fields: pid comm state ... utime stime ...
-        let fields: Vec<&str> = stat_content.split_whitespace().collect();
-        if fields.len() < 15 {
+        // Thread/comm names can contain spaces or parens, so step past the
+        // last ')' before parsing post-comm fields. Post-comm offsets:
+        //   0: state, 1: ppid, 2: pgrp, ..., 11: utime, 12: stime
+        let Some(rpar) = stat_content.rfind(')') else {
             continue;
-        }
-
-        // Field 2 is state (R, S, D, Z, T, etc.)
-        let status = fields
-            .get(2)
+        };
+        let Some(after) = stat_content.get(rpar + 1..) else {
+            continue;
+        };
+        let mut it = after.split_whitespace();
+        let status = it
+            .next()
             .and_then(|s| s.chars().next())
             .map(|c| match c {
                 'R' => "Running",
@@ -1089,16 +1204,9 @@ fn collect_thread_info(pid: u32) -> Vec<crate::types::ThreadInfo> {
             .unwrap_or("Unknown")
             .to_string();
 
-        // Field 13 is utime (user CPU time in clock ticks)
-        // Field 14 is stime (system CPU time in clock ticks)
-        let utime = fields
-            .get(13)
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        let stime = fields
-            .get(14)
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
+        // 10 fields between state and utime (ppid..cmajflt).
+        let utime = it.nth(10).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let stime = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
 
         // Convert clock ticks to microseconds (assuming 100 Hz)
         // 1 tick = 10ms = 10,000 microseconds
@@ -1167,34 +1275,13 @@ pub async fn collect_process_metrics(
     let parent_pid = process.parent().map(|p| p.as_u32());
     let start_time = process.start_time();
 
-    // Read UID and GID directly from /proc/{pid}/status for accuracy
+    // Read UID and GID directly from /proc/{pid}/status for accuracy.
+    // Uses the shared single-read helper (also extracts memory, threads,
+    // state — we discard those here since sysinfo already provided them).
     #[cfg(target_os = "linux")]
-    let (user_id, group_id) =
-        if let Ok(status_content) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
-            let mut uid = 0u32;
-            let mut gid = 0u32;
-
-            for line in status_content.lines() {
-                if let Some(value) = line.strip_prefix("Uid:") {
-                    // Uid line format: "Uid:	1000	1000	1000	1000" (real, effective, saved, filesystem)
-                    // We want the real UID (first value)
-                    if let Some(uid_str) = value.split_whitespace().next() {
-                        uid = uid_str.parse().unwrap_or(0);
-                    }
-                } else if let Some(value) = line.strip_prefix("Gid:") {
-                    // Gid line format: "Gid:	1000	1000	1000	1000" (real, effective, saved, filesystem)
-                    // We want the real GID (first value)
-                    if let Some(gid_str) = value.split_whitespace().next() {
-                        gid = gid_str.parse().unwrap_or(0);
-                    }
-                }
-            }
-
-            (uid, gid)
-        } else {
-            // Fallback if /proc read fails (permission issue)
-            (0, 0)
-        };
+    let (user_id, group_id) = read_proc_status(pid)
+        .map(|s| (s.uid, s.gid))
+        .unwrap_or((0, 0));
 
     #[cfg(not(target_os = "linux"))]
     let (user_id, group_id) = (0, 0);
@@ -1248,6 +1335,9 @@ pub async fn collect_process_metrics(
     // Collect thread information (Linux only)
     let threads = collect_thread_info(pid);
 
+    // One read of /proc/{pid}/stat covers both user + system CPU times.
+    let (cpu_time_user, cpu_time_system) = get_cpu_times_ms(pid);
+
     // Now construct the detailed info without holding the lock
     let detailed_info = DetailedProcessInfo {
         pid,
@@ -1264,8 +1354,8 @@ pub async fn collect_process_metrics(
         user_id,
         group_id,
         start_time,
-        cpu_time_user: get_cpu_time_user(pid),
-        cpu_time_system: get_cpu_time_system(pid),
+        cpu_time_user,
+        cpu_time_system,
         read_bytes,
         write_bytes,
         working_directory,

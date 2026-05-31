@@ -69,12 +69,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             Message::Text(ref text) if text == "get_processes" => {
                 let payload = collect_processes_all(&state).await;
 
-                // Map to protobuf message
-                // Get cached buffers
+                // Get cached buffers. The Vec capacity is preserved across
+                // calls (with_capacity(512) seeds it, then we swap-back after
+                // encode so the allocation outlives any single request).
                 let cache = COMPRESSION_CACHE.get_or_init(|| Mutex::new(CompressionCache::new()));
                 let mut cache = cache.lock().await;
 
-                // Reuse process vector to build the list
                 cache.processes_vec.clear();
                 cache
                     .processes_vec
@@ -85,29 +85,38 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         mem_bytes: p.mem_bytes,
                     }));
 
-                let pb = pb::Processes {
+                // Move the populated Vec into the proto, encode, then move it
+                // BACK into the cache so the next call reuses the same heap
+                // allocation. The previous code did `mem::take(...)` here but
+                // then dropped `pb` (and the Vec along with it), leaving the
+                // cache holding an empty zero-capacity Vec — defeating the
+                // whole point of `with_capacity(512)`.
+                let mut pb = pb::Processes {
                     process_count: payload.process_count as u64,
                     rows: std::mem::take(&mut cache.processes_vec),
                 };
 
                 let mut buf = Vec::with_capacity(8 * 1024);
-                if prost::Message::encode(&pb, &mut buf).is_err() {
+                let encode_result = prost::Message::encode(&pb, &mut buf);
+                // Restore the (now-encoded-from) Vec to the cache before pb is
+                // dropped. We `take` it out of pb to leave that field empty,
+                // and the next request will `.clear()` before refilling.
+                cache.processes_vec = std::mem::take(&mut pb.rows);
+
+                if encode_result.is_err() {
                     let _ = socket.send(Message::Close(None)).await;
+                } else if buf.len() <= COMPRESSION_THRESHOLD {
+                    let _ = socket.send(Message::Binary(buf)).await;
                 } else {
-                    // compress if large
-                    if buf.len() <= COMPRESSION_THRESHOLD {
-                        let _ = socket.send(Message::Binary(buf)).await;
-                    } else {
-                        // Create a new encoder for each message to ensure proper gzip headers
-                        let mut encoder =
-                            GzEncoder::new(Vec::with_capacity(buf.len()), Compression::fast());
-                        match encoder.write_all(&buf).and_then(|_| encoder.finish()) {
-                            Ok(compressed) => {
-                                let _ = socket.send(Message::Binary(compressed)).await;
-                            }
-                            Err(_) => {
-                                let _ = socket.send(Message::Binary(buf)).await;
-                            }
+                    // Create a new encoder for each message to ensure proper gzip headers
+                    let mut encoder =
+                        GzEncoder::new(Vec::with_capacity(buf.len()), Compression::fast());
+                    match encoder.write_all(&buf).and_then(|_| encoder.finish()) {
+                        Ok(compressed) => {
+                            let _ = socket.send(Message::Binary(compressed)).await;
+                        }
+                        Err(_) => {
+                            let _ = socket.send(Message::Binary(buf)).await;
                         }
                     }
                 }

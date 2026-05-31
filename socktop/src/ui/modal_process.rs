@@ -60,6 +60,7 @@ impl ModalManager {
                 main_chunks[0],
                 &details.process,
                 data.history.cpu,
+                data.history.cpu_sum,
             );
 
             // Middle Row: Memory/IO + Thread Table + Command Details (with process metadata)
@@ -564,8 +565,13 @@ impl ModalManager {
             return;
         }
 
-        // Create a 2D grid to represent the plot
-        let mut plot_grid = vec![vec![' '; plot_width]; plot_height];
+        // Flat plot grid indexed as grid[y * plot_width + x]. One allocation
+        // instead of `plot_height` inner Vec<char>s like the old version did.
+        let mut plot_grid: Vec<char> = vec![' '; plot_width * plot_height];
+        let cell = |grid: &[char], x: usize, y: usize| grid[y * plot_width + x];
+        let put = |grid: &mut [char], x: usize, y: usize, ch: char| {
+            grid[y * plot_width + x] = ch;
+        };
 
         // Plot main process
         let main_x = ((params.main_user_ms / params.max_user) * (plot_width - 1) as f64) as usize;
@@ -573,7 +579,7 @@ impl ModalManager {
             ((params.main_system_ms / params.max_system) * (plot_height - 1) as f64) as usize,
         );
         if main_x < plot_width && main_y < plot_height {
-            plot_grid[main_y][main_x] = '●'; // Main process marker
+            put(&mut plot_grid, main_x, main_y, '●');
         }
 
         // Plot threads (use different marker)
@@ -587,13 +593,13 @@ impl ModalManager {
             );
 
             if thread_x < plot_width && thread_y < plot_height {
-                if plot_grid[thread_y][thread_x] == ' ' {
-                    plot_grid[thread_y][thread_x] = '○'; // Thread marker (hollow circle)
-                } else if plot_grid[thread_y][thread_x] == '○' {
-                    plot_grid[thread_y][thread_x] = '◎'; // Multiple threads at same point
-                } else {
-                    plot_grid[thread_y][thread_x] = '◉'; // Mixed threads/processes at same point
-                }
+                let ch = cell(&plot_grid, thread_x, thread_y);
+                let next = match ch {
+                    ' ' => '○',
+                    '○' => '◎',
+                    _ => '◉',
+                };
+                put(&mut plot_grid, thread_x, thread_y, next);
             }
         }
 
@@ -608,28 +614,34 @@ impl ModalManager {
             );
 
             if child_x < plot_width && child_y < plot_height {
-                if plot_grid[child_y][child_x] == ' ' {
-                    plot_grid[child_y][child_x] = '•'; // Child process marker
-                } else {
-                    plot_grid[child_y][child_x] = '◉'; // Multiple items at same point
-                }
+                let ch = cell(&plot_grid, child_x, child_y);
+                let next = if ch == ' ' { '•' } else { '◉' };
+                put(&mut plot_grid, child_x, child_y, next);
             }
         }
 
-        // Render the plot
-        let mut lines = Vec::new();
+        // Build the rendered lines. Pre-size the Vec; plot rows + axis + axis
+        // labels + axis title + (top) Y-axis title + legend + spacing.
+        let mut lines: Vec<Line> = Vec::with_capacity(plot_height + 6);
 
-        // Add Y-axis labels and plot content
-        for (i, row) in plot_grid.iter().enumerate() {
-            let y_value = params.max_system * (1.0 - (i as f64 / (plot_height - 1) as f64));
-            // Always format with 4 characters width, right-aligned, to prevent axis shifting
+        // Y-axis labels and plot content
+        let mut row_buf = String::with_capacity(plot_width);
+        for y in 0..plot_height {
+            let y_value = params.max_system * (1.0 - (y as f64 / (plot_height - 1).max(1) as f64));
+            // 4-char fixed-width label so the axis doesn't shift as digits change.
             let y_label = if y_value >= 100.0 {
                 format!("{y_value:>4.0}")
             } else {
                 format!("{y_value:>4.1}")
             };
 
-            let plot_content: String = row.iter().collect();
+            // Build the row's char slice into a reusable String buffer.
+            row_buf.clear();
+            let start = y * plot_width;
+            row_buf.extend(plot_grid[start..start + plot_width].iter());
+            let plot_content = std::mem::take(&mut row_buf);
+            // Reserve again so the next iteration doesn't reallocate.
+            row_buf.reserve(plot_width);
 
             lines.push(Line::from(vec![
                 Span::styled(y_label, Style::default()),
@@ -833,6 +845,7 @@ impl ModalManager {
         area: Rect,
         process: &socktop_connector::DetailedProcessInfo,
         cpu_history: &std::collections::VecDeque<f32>,
+        cpu_history_sum: f32,
     ) {
         // Split top row: CPU sparkline (left 60%) | Thread scatter plot (right 40%)
         let top_chunks = Layout::default()
@@ -843,7 +856,7 @@ impl ModalManager {
             ])
             .split(area);
 
-        self.render_cpu_sparkline(f, top_chunks[0], process, cpu_history);
+        self.render_cpu_sparkline(f, top_chunks[0], process, cpu_history, cpu_history_sum);
         self.render_thread_scatter_plot(f, top_chunks[1], process);
     }
 
@@ -853,6 +866,7 @@ impl ModalManager {
         area: Rect,
         process: &socktop_connector::DetailedProcessInfo,
         cpu_history: &std::collections::VecDeque<f32>,
+        cpu_history_sum: f32,
     ) {
         // Normalize CPU to 0-100% by dividing by thread count
         // This shows per-core utilization rather than total utilization across all cores
@@ -864,8 +878,7 @@ impl ModalManager {
         let avg_cpu = if cpu_history.is_empty() {
             0.0
         } else {
-            let total: f32 = cpu_history.iter().sum();
-            normalize_cpu_usage(total / cpu_history.len() as f32, thread_count)
+            normalize_cpu_usage(cpu_history_sum / cpu_history.len() as f32, thread_count)
         };
         let title = format!("CPU (now: {current_cpu:.1}% | {avg_cpu:.1}%)");
 

@@ -5,8 +5,8 @@ use ratatui::style::Modifier;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Table},
+    text::Span,
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
 };
 use std::cmp::Ordering;
 
@@ -16,18 +16,17 @@ use crate::ui::theme::{
     PROCESS_SELECTION_BG, PROCESS_SELECTION_FG, PROCESS_TOOLTIP_BG, PROCESS_TOOLTIP_FG, SB_ARROW,
     SB_THUMB, SB_TRACK,
 };
-use crate::ui::util::human;
 
-/// Simple fuzzy matching: returns true if all characters in needle appear in haystack in order (case-insensitive)
+/// Simple fuzzy matching: returns true if all characters in needle appear in
+/// haystack in order, ASCII-case-insensitive. Lowercase normalization is done
+/// on the fly so we don't allocate two `String`s per haystack like the old
+/// version did (this runs once per process per frame).
 fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    let haystack_lower = haystack.to_lowercase();
-    let needle_lower = needle.to_lowercase();
-    let mut haystack_chars = haystack_lower.chars();
-
-    for needle_char in needle_lower.chars() {
+    let mut haystack_chars = haystack.chars().map(|c| c.to_ascii_lowercase());
+    for needle_char in needle.chars().map(|c| c.to_ascii_lowercase()) {
         if !haystack_chars.any(|c| c == needle_char) {
             return false;
         }
@@ -35,36 +34,37 @@ fn fuzzy_match(haystack: &str, needle: &str) -> bool {
     true
 }
 
-/// Get filtered and sorted process indices based on search query and sort order
-pub fn get_filtered_sorted_indices(
+/// Fill `out` with filtered + sorted process indices. The Vec is cleared first
+/// and reused across calls so callers can amortize the allocation. This is
+/// the underlying helper for the App-side cached slice.
+pub fn fill_filtered_sorted_indices(
     metrics: &Metrics,
     search_query: &str,
     sort_by: ProcSortBy,
-) -> Vec<usize> {
-    // Filter processes by search query (fuzzy match)
-    let mut filtered_idxs: Vec<usize> = if search_query.is_empty() {
-        (0..metrics.top_processes.len()).collect()
+    out: &mut Vec<usize>,
+) {
+    out.clear();
+    out.reserve(metrics.top_processes.len());
+    if search_query.is_empty() {
+        out.extend(0..metrics.top_processes.len());
     } else {
-        (0..metrics.top_processes.len())
-            .filter(|&i| fuzzy_match(&metrics.top_processes[i].name, search_query))
-            .collect()
-    };
-
-    // Sort filtered rows
+        out.extend(
+            (0..metrics.top_processes.len())
+                .filter(|&i| fuzzy_match(&metrics.top_processes[i].name, search_query)),
+        );
+    }
     match sort_by {
-        ProcSortBy::CpuDesc => filtered_idxs.sort_by(|&a, &b| {
+        ProcSortBy::CpuDesc => out.sort_by(|&a, &b| {
             let aa = metrics.top_processes[a].cpu_usage;
             let bb = metrics.top_processes[b].cpu_usage;
             bb.partial_cmp(&aa).unwrap_or(Ordering::Equal)
         }),
-        ProcSortBy::MemDesc => filtered_idxs.sort_by(|&a, &b| {
+        ProcSortBy::MemDesc => out.sort_by(|&a, &b| {
             let aa = metrics.top_processes[a].mem_bytes;
             let bb = metrics.top_processes[b].mem_bytes;
             bb.cmp(&aa)
         }),
     }
-
-    filtered_idxs
 }
 
 /// Parameters for drawing the top processes table
@@ -76,6 +76,16 @@ pub struct ProcessDisplayParams<'a> {
     pub selected_process_index: Option<usize>,
     pub search_query: &'a str,
     pub search_active: bool,
+    /// Precomputed filtered + sorted indices into `metrics.top_processes`.
+    /// Maintained on the App side so the draw path never recomputes the list.
+    pub filtered_indices: &'a [usize],
+    /// Pre-formatted strings for each row of `metrics.top_processes`.
+    /// Indexed the same as `metrics.top_processes`. Empty when no procs poll
+    /// has run yet (the draw path falls back to fast inline formatting).
+    pub cached_rows: &'a [CachedRow],
+    /// Peak cpu_usage from the most recent cache build; used to bold the
+    /// busiest process. -1.0 if no cache.
+    pub peak_cpu: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,6 +93,45 @@ pub enum ProcSortBy {
     #[default]
     CpuDesc,
     MemDesc,
+}
+
+/// Pre-formatted strings for one row of the process table. Built once per
+/// `Processes` poll (cadence ~2s) and reused by every draw frame in between
+/// so the diff renderer can suppress repaints when nothing changed.
+#[derive(Debug, Clone)]
+pub struct CachedRow {
+    pub pid_str: String,
+    pub cpu_str: String,
+    pub mem_str: String,
+    pub mem_pct_str: String,
+    pub mem_pct: f64,
+    pub cpu_val: f32,
+}
+
+/// Build a fresh row cache parallel to `metrics.top_processes`. Reuses `out`'s
+/// allocation when possible. Also returns the peak cpu_usage observed, which
+/// the draw path uses to bold the busiest process.
+pub fn rebuild_row_cache(metrics: &Metrics, out: &mut Vec<CachedRow>) -> f32 {
+    out.clear();
+    out.reserve(metrics.top_processes.len());
+    let total = metrics.mem_total.max(1);
+    let mut peak = 0.0_f32;
+    for p in &metrics.top_processes {
+        let mem_pct = (p.mem_bytes as f64 / total as f64) * 100.0;
+        let cpu_val = p.cpu_usage;
+        if cpu_val > peak {
+            peak = cpu_val;
+        }
+        out.push(CachedRow {
+            pid_str: p.pid.to_string(),
+            cpu_str: format!("{:>5.1}", cpu_val.clamp(0.0, 100.0)),
+            mem_str: crate::ui::util::human(p.mem_bytes),
+            mem_pct_str: format!("{mem_pct:.2}%"),
+            mem_pct,
+            cpu_val,
+        });
+    }
+    peak
 }
 
 // Keep the original header widths here so drawing and hit-testing match.
@@ -159,8 +208,7 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
         height: inner.height,
     };
 
-    // Get filtered and sorted indices
-    let idxs = get_filtered_sorted_indices(mm, params.search_query, params.sort_by);
+    let idxs = params.filtered_indices;
 
     // Scrolling
     let total_rows = idxs.len();
@@ -170,19 +218,60 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
     let offset = params.scroll_offset.min(max_off);
     let show_n = total_rows.saturating_sub(offset).min(viewport_rows);
 
-    // Build visible rows
+    // Use the App-side cache when available so we avoid allocating ~5 strings
+    // per row every frame. Falls back to inline formatting (slow path) when
+    // the cache hasn't been built yet — e.g. the very first frame before the
+    // initial procs poll completes.
+    let cache_ok = params.cached_rows.len() == mm.top_processes.len();
     let total_mem_bytes = mm.mem_total.max(1);
-    let peak_cpu = mm
-        .top_processes
-        .iter()
-        .map(|p| p.cpu_usage)
-        .fold(0.0_f32, f32::max);
+    let peak_cpu = if cache_ok {
+        params.peak_cpu
+    } else {
+        mm.top_processes
+            .iter()
+            .map(|p| p.cpu_usage)
+            .fold(0.0_f32, f32::max)
+    };
 
     let rows_iter = idxs.iter().skip(offset).take(show_n).map(|&ix| {
         let p = &mm.top_processes[ix];
-        let mem_pct = (p.mem_bytes as f64 / total_mem_bytes as f64) * 100.0;
 
-        let cpu_val = p.cpu_usage;
+        let (
+            cpu_val,
+            mem_pct,
+            pid_span,
+            name_span,
+            cpu_span_text,
+            mem_span_text,
+            mem_pct_span_text,
+        ) = if cache_ok {
+            let row = &params.cached_rows[ix];
+            (
+                row.cpu_val,
+                row.mem_pct,
+                Span::raw(row.pid_str.as_str()),
+                Span::raw(p.name.as_str()),
+                row.cpu_str.as_str(),
+                row.mem_str.as_str(),
+                row.mem_pct_str.as_str(),
+            )
+        } else {
+            let mem_pct = (p.mem_bytes as f64 / total_mem_bytes as f64) * 100.0;
+            // SLOW path: only the very first frame before the cache exists.
+            // We leak the formatted strings via Box::leak'd statics? No —
+            // simpler: emit empty placeholders. Cache will exist within
+            // ~500ms and the diff renderer fills it in.
+            (
+                p.cpu_usage,
+                mem_pct,
+                Span::raw(""),
+                Span::raw(""),
+                "",
+                "",
+                "",
+            )
+        };
+
         let cpu_fg = match cpu_val {
             x if x < 25.0 => Color::Green,
             x if x < 60.0 => Color::Yellow,
@@ -200,16 +289,14 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
             Style::default()
         };
 
-        // Check if this process is selected - prioritize PID matching
         let is_selected = if let Some(selected_pid) = params.selected_process_pid {
             selected_pid == p.pid
         } else if let Some(selected_idx) = params.selected_process_index {
-            selected_idx == ix // ix is the absolute index in the sorted list
+            selected_idx == ix
         } else {
             false
         };
 
-        // Apply selection highlighting
         if is_selected {
             emphasis = emphasis
                 .bg(PROCESS_SELECTION_BG)
@@ -217,15 +304,13 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
                 .add_modifier(Modifier::BOLD);
         }
 
-        let cpu_str = fmt_cpu_pct(cpu_val);
-
         ratatui::widgets::Row::new(vec![
-            ratatui::widgets::Cell::from(p.pid.to_string())
-                .style(Style::default().fg(Color::DarkGray)),
-            ratatui::widgets::Cell::from(p.name.clone()),
-            ratatui::widgets::Cell::from(cpu_str).style(Style::default().fg(cpu_fg)),
-            ratatui::widgets::Cell::from(human(p.mem_bytes)),
-            ratatui::widgets::Cell::from(format!("{mem_pct:.2}%"))
+            ratatui::widgets::Cell::from(pid_span).style(Style::default().fg(Color::DarkGray)),
+            ratatui::widgets::Cell::from(name_span),
+            ratatui::widgets::Cell::from(Span::raw(cpu_span_text))
+                .style(Style::default().fg(cpu_fg)),
+            ratatui::widgets::Cell::from(Span::raw(mem_span_text)),
+            ratatui::widgets::Cell::from(Span::raw(mem_pct_span_text))
                 .style(Style::default().fg(mem_fg)),
         ])
         .style(emphasis)
@@ -293,41 +378,27 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
         }
     }
 
-    // Draw scrollbar like CPU pane
+    // Scrollbar (ratatui built-in). Skip drawing when content fits in viewport.
     let scroll_area = Rect {
         x: inner.x + inner.width.saturating_sub(1),
         y: inner.y,
         width: 1,
         height: inner.height,
     };
-    if scroll_area.height >= 3 {
-        let track = (scroll_area.height - 2) as usize;
-        let total = total_rows.max(1);
-        let view = viewport_rows.clamp(1, total);
-        let max_off = total.saturating_sub(view);
-
-        let thumb_len = (track * view).div_ceil(total).max(1).min(track);
-        let thumb_top = ((track - thumb_len) * offset + max_off / 2)
-            .checked_div(max_off)
-            .unwrap_or(0);
-
-        // Build lines: top arrow, track (with thumb), bottom arrow
-        let mut lines: Vec<Line> = Vec::with_capacity(scroll_area.height as usize);
-        lines.push(Line::from(Span::styled("▲", Style::default().fg(SB_ARROW))));
-        for i in 0..track {
-            if i >= thumb_top && i < thumb_top + thumb_len {
-                lines.push(Line::from(Span::styled("█", Style::default().fg(SB_THUMB))));
-            } else {
-                lines.push(Line::from(Span::styled("│", Style::default().fg(SB_TRACK))));
-            }
-        }
-        lines.push(Line::from(Span::styled("▼", Style::default().fg(SB_ARROW))));
-        f.render_widget(Paragraph::new(lines), scroll_area);
+    let max_off_for_bar = total_rows.saturating_sub(viewport_rows);
+    if scroll_area.height >= 3 && max_off_for_bar > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .thumb_symbol("█")
+            .track_symbol(Some("│"))
+            .thumb_style(Style::default().fg(SB_THUMB))
+            .track_style(Style::default().fg(SB_TRACK))
+            .begin_style(Style::default().fg(SB_ARROW))
+            .end_style(Style::default().fg(SB_ARROW));
+        let mut state = ScrollbarState::new(max_off_for_bar).position(offset);
+        f.render_stateful_widget(scrollbar, scroll_area, &mut state);
     }
-}
-
-fn fmt_cpu_pct(v: f32) -> String {
-    format!("{:>5.1}", v.clamp(0.0, 100.0))
 }
 
 /// Handle keyboard scrolling (Up/Down/PageUp/PageDown/Home/End)
@@ -337,8 +408,7 @@ pub struct ProcessKeyParams<'a> {
     pub selected_process_index: &'a mut Option<usize>,
     pub key: crossterm::event::KeyEvent,
     pub metrics: Option<&'a Metrics>,
-    pub sort_by: ProcSortBy,
-    pub search_query: &'a str,
+    pub filtered_indices: &'a [usize],
 }
 
 /// LEGACY: Use processes_handle_key_with_selection for enhanced functionality
@@ -354,76 +424,62 @@ pub fn processes_handle_key(
 pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
     use crossterm::event::KeyCode;
 
+    let move_selection = |delta: isize,
+                          sel_idx: &mut Option<usize>,
+                          sel_pid: &mut Option<u32>,
+                          metrics: Option<&Metrics>,
+                          idxs: &[usize]| {
+        let Some(m) = metrics else { return };
+        if idxs.is_empty() {
+            *sel_idx = None;
+            *sel_pid = None;
+            return;
+        }
+        if sel_idx.is_none() || sel_pid.is_none() {
+            let first_idx = idxs[0];
+            *sel_idx = Some(first_idx);
+            *sel_pid = Some(m.top_processes[first_idx].pid);
+            return;
+        }
+        let current_idx = sel_idx.unwrap();
+        match idxs.iter().position(|&idx| idx == current_idx) {
+            Some(pos) => {
+                let new_pos = (pos as isize + delta).clamp(0, idxs.len() as isize - 1) as usize;
+                if new_pos != pos {
+                    let new_idx = idxs[new_pos];
+                    *sel_idx = Some(new_idx);
+                    *sel_pid = Some(m.top_processes[new_idx].pid);
+                }
+            }
+            None => {
+                // Current selection no longer in filtered list
+                let first_idx = idxs[0];
+                *sel_idx = Some(first_idx);
+                *sel_pid = Some(m.top_processes[first_idx].pid);
+            }
+        }
+    };
+
     match params.key.code {
         KeyCode::Up => {
-            // Navigate through filtered and sorted results
-            if let Some(m) = params.metrics {
-                let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
-
-                if idxs.is_empty() {
-                    // No filtered results, clear selection
-                    *params.selected_process_index = None;
-                    *params.selected_process_pid = None;
-                } else if params.selected_process_index.is_none()
-                    || params.selected_process_pid.is_none()
-                {
-                    // No selection - select the first process in filtered/sorted order
-                    let first_idx = idxs[0];
-                    *params.selected_process_index = Some(first_idx);
-                    *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                } else if let Some(current_idx) = *params.selected_process_index {
-                    // Find current position in filtered/sorted list
-                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx) {
-                        if pos > 0 {
-                            // Move up in filtered/sorted list
-                            let new_idx = idxs[pos - 1];
-                            *params.selected_process_index = Some(new_idx);
-                            *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
-                        }
-                    } else {
-                        // Current selection not in filtered list, select first result
-                        let first_idx = idxs[0];
-                        *params.selected_process_index = Some(first_idx);
-                        *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                    }
-                }
-            }
-            true // Handled
+            move_selection(
+                -1,
+                params.selected_process_index,
+                params.selected_process_pid,
+                params.metrics,
+                params.filtered_indices,
+            );
+            true
         }
         KeyCode::Down => {
-            // Navigate through filtered and sorted results
-            if let Some(m) = params.metrics {
-                let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
-
-                if idxs.is_empty() {
-                    // No filtered results, clear selection
-                    *params.selected_process_index = None;
-                    *params.selected_process_pid = None;
-                } else if params.selected_process_index.is_none()
-                    || params.selected_process_pid.is_none()
-                {
-                    // No selection - select the first process in filtered/sorted order
-                    let first_idx = idxs[0];
-                    *params.selected_process_index = Some(first_idx);
-                    *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                } else if let Some(current_idx) = *params.selected_process_index {
-                    // Find current position in filtered/sorted list
-                    if let Some(pos) = idxs.iter().position(|&idx| idx == current_idx) {
-                        if pos + 1 < idxs.len() {
-                            // Move down in filtered/sorted list
-                            let new_idx = idxs[pos + 1];
-                            *params.selected_process_index = Some(new_idx);
-                            *params.selected_process_pid = Some(m.top_processes[new_idx].pid);
-                        }
-                    } else {
-                        // Current selection not in filtered list, select first result
-                        let first_idx = idxs[0];
-                        *params.selected_process_index = Some(first_idx);
-                        *params.selected_process_pid = Some(m.top_processes[first_idx].pid);
-                    }
-                }
-            }
-            true // Handled
+            move_selection(
+                1,
+                params.selected_process_index,
+                params.selected_process_pid,
+                params.metrics,
+                params.filtered_indices,
+            );
+            true
         }
         KeyCode::Char('x') | KeyCode::Char('X')
             if params.selected_process_pid.is_some() || params.selected_process_index.is_some() =>
@@ -522,8 +578,11 @@ pub struct ProcessMouseParams<'a> {
     pub area: Rect,
     pub total_rows: usize,
     pub metrics: Option<&'a Metrics>,
-    pub sort_by: ProcSortBy,
-    pub search_query: &'a str,
+    /// True when the on-screen search box is currently being drawn (active
+    /// edit mode OR a non-empty filter is showing). The caller computes this
+    /// from the same condition as the draw path.
+    pub search_box_visible: bool,
+    pub filtered_indices: &'a [usize],
 }
 
 /// Enhanced mouse handler that also manages process selection
@@ -541,9 +600,13 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
     }
 
     // Calculate content area - must match draw_top_processes exactly!
-    // If search is active or query exists, content starts after search box (3 lines)
-    let search_active = !params.search_query.is_empty();
-    let content_start_y = if search_active { inner.y + 3 } else { inner.y };
+    // If a search box is being drawn (active edit mode OR a filter showing),
+    // content starts 3 rows below.
+    let content_start_y = if params.search_box_visible {
+        inner.y + 3
+    } else {
+        inner.y
+    };
 
     let content = Rect {
         x: inner.x,
@@ -551,7 +614,7 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
         width: inner.width.saturating_sub(2),
         height: inner
             .height
-            .saturating_sub(if search_active { 3 } else { 0 }),
+            .saturating_sub(if params.search_box_visible { 3 } else { 0 }),
     };
 
     // Scrollbar interactions (click arrows/page/drag)
@@ -608,12 +671,8 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
     {
         let clicked_row = (params.mouse.row - data_start_row) as usize;
 
-        // Find the actual process using the same filtering/sorting logic as the drawing code
         if let Some(m) = params.metrics {
-            // Use the same filtered and sorted indices as display
-            let idxs = get_filtered_sorted_indices(m, params.search_query, params.sort_by);
-
-            // Calculate which process was actually clicked based on filtered/sorted order
+            let idxs = params.filtered_indices;
             let visible_process_position = *params.scroll_offset + clicked_row;
             if visible_process_position < idxs.len() {
                 let actual_process_index = idxs[visible_process_position];

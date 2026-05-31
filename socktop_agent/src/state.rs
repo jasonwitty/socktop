@@ -17,6 +17,10 @@ pub type SharedNetworks = Arc<Mutex<Networks>>;
 pub struct ProcCpuTracker {
     pub last_total: u64,
     pub last_per_pid: HashMap<u32, u64>,
+    /// PID → process name cache. Mirrors the non-Linux `ProcessCache.names`.
+    /// On a Pi with ~150-300 mostly-stable processes this avoids re-allocating
+    /// the same `String`s on every processes poll (~once per 1.5s).
+    pub names: HashMap<u32, String>,
 }
 
 #[cfg(not(target_os = "linux"))]
