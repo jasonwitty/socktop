@@ -96,6 +96,7 @@ fn disks_ttl_ms() -> u64 {
             .unwrap_or(1_000)
     })
 }
+#[cfg(target_os = "linux")]
 fn processes_ttl_ms() -> u64 {
     static V: OnceCell<u64> = OnceCell::new();
     *V.get_or_init(|| {
