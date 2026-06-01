@@ -649,12 +649,18 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // to gather CPU/exe/cmd/cwd/env per process is wasted /proc traffic on a Pi
     // (was reading /proc/{pid}/{cmdline,exe,cwd,environ,io,status} for every PID
     // on every 2 s poll via `everything()`).
+    //
+    // `without_tasks()` is REQUIRED: it suppresses per-thread entries in the
+    // process map (without it, sysinfo returns one entry per /proc/[tid] —
+    // 780+ entries on a typical desktop because of glib/gdbus/Chrome thread
+    // pools). The original code paired this with `everything()`; we keep the
+    // filter when downgrading to a minimal refresh spec.
     let mut sys_guard = state.sys.lock().await;
     let sys = &mut *sys_guard;
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         false,
-        ProcessRefreshKind::nothing().with_memory(),
+        ProcessRefreshKind::nothing().with_memory().without_tasks(),
     );
 
     let total_count = sys.processes().len();
