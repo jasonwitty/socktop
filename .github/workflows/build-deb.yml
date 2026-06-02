@@ -1,10 +1,10 @@
 name: Build Debian Packages
 
 on:
+  # APT publishing is release-driven: we build + publish only on `v*` tag
+  # pushes. PRs into master still build the .debs as a sanity check (no
+  # publish). Manual dispatch is kept as an escape hatch.
   push:
-    branches:
-      - master
-      - feature/debian-packaging
     tags:
       - "v*"
   pull_request:
@@ -231,7 +231,9 @@ jobs:
     name: Publish to APT Repository
     needs: combine-artifacts
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    # Publish only on `v*` release tags — keep gh-pages stable between
+    # releases instead of overwriting same-version .debs on every commit.
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
