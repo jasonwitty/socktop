@@ -29,11 +29,15 @@ use crate::ui::cpu::{
 };
 use crate::ui::modal::{ModalAction, ModalManager, ModalType};
 use crate::ui::processes::{
-    ProcSortBy, ProcessKeyParams, get_filtered_sorted_indices, processes_handle_key_with_selection,
+    ProcSortBy, ProcessKeyParams, processes_handle_key_with_selection,
     processes_handle_mouse_with_selection,
 };
 use crate::ui::{
-    disks::draw_disks, gpu::draw_gpu, header::draw_header, mem::draw_mem, net::draw_net_spark,
+    disks::draw_disks,
+    gpu::draw_gpu,
+    header::{build_header_intervals, build_header_title, draw_header},
+    mem::draw_mem,
+    net::draw_net_spark,
     swap::draw_swap,
 };
 
@@ -46,6 +50,15 @@ use socktop_connector::{
 const MIN_METRICS_INTERVAL_MS: u64 = 100;
 const MIN_PROCESSES_INTERVAL_MS: u64 = 200;
 
+/// Drop duplicate-name entries from a disks payload (the agent occasionally
+/// reports a partition twice). Done once when fresh disk data arrives so the
+/// per-frame draw path doesn't have to rebuild a HashSet.
+fn dedup_disks(disks: &mut Vec<socktop_connector::DiskInfo>) {
+    let mut seen: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(disks.len());
+    disks.retain(|d| seen.insert(d.name.clone()));
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {
     Connected,
@@ -57,8 +70,9 @@ pub struct App {
     // Latest metrics + histories
     last_metrics: Option<Metrics>,
 
-    // CPU avg history (0..100)
+    // CPU avg history (0..100) with a running sum so draw avoids a 600-element fold per frame
     cpu_hist: VecDeque<u64>,
+    cpu_hist_sum: u64,
 
     // Per-core history (0..100)
     per_core_hist: PerCoreHistory,
@@ -89,6 +103,17 @@ pub struct App {
     pub process_search_active: bool,
     pub process_search_query: String,
 
+    // Cached filtered + sorted process indices. Refreshed lazily when any of
+    // (metrics, sort order, search query) changes — input handlers, the draw
+    // path, and auto-scroll all read from this slice so we avoid rebuilding
+    // an indices Vec on every event.
+    procs_filtered: Vec<usize>,
+    procs_filter_dirty: bool,
+    // Pre-formatted process-row strings, rebuilt once per procs poll. Indexed
+    // parallel to `last_metrics.top_processes`.
+    procs_row_cache: Vec<crate::ui::processes::CachedRow>,
+    procs_row_peak_cpu: f32,
+
     last_procs_poll: Instant,
     last_disks_poll: Instant,
     procs_interval: Duration,
@@ -99,6 +124,7 @@ pub struct App {
     pub process_details: Option<socktop_connector::ProcessMetricsResponse>,
     pub journal_entries: Option<socktop_connector::JournalResponse>,
     pub process_cpu_history: VecDeque<f32>, // CPU history for sparkline (last 60 samples)
+    pub process_cpu_history_sum: f32,       // running sum of process_cpu_history
     pub process_mem_history: VecDeque<u64>, // Memory usage history in bytes (last 60 samples)
     pub process_io_read_history: VecDeque<u64>, // Disk read DELTA history in bytes (last 60 samples)
     pub process_io_write_history: VecDeque<u64>, // Disk write DELTA history in bytes (last 60 samples)
@@ -119,6 +145,17 @@ pub struct App {
     pub is_tls: bool,
     pub has_token: bool,
 
+    // Cached title strings — only rebuilt when source values change so the
+    // diff renderer can suppress redraws on idle frames.
+    header_title: String,
+    header_title_key: (String, bool, bool),
+    header_intervals_text: String,
+    header_intervals_key: (u128, u128),
+    net_dl_title: String,
+    net_dl_key: (u64, u64),
+    net_ul_title: String,
+    net_ul_key: (u64, u64),
+
     // Modal system
     pub modal_manager: crate::ui::modal::ModalManager,
 
@@ -136,6 +173,7 @@ impl App {
         Self {
             last_metrics: None,
             cpu_hist: VecDeque::with_capacity(600),
+            cpu_hist_sum: 0,
             per_core_hist: PerCoreHistory::new(60),
             last_net_totals: None,
             rx_hist: VecDeque::with_capacity(600),
@@ -154,6 +192,10 @@ impl App {
             prev_selected_process_pid: None,
             process_search_active: false,
             process_search_query: String::new(),
+            procs_filtered: Vec::new(),
+            procs_filter_dirty: true,
+            procs_row_cache: Vec::new(),
+            procs_row_peak_cpu: 0.0,
             last_procs_poll: Instant::now()
                 .checked_sub(Duration::from_secs(2))
                 .unwrap_or_else(Instant::now), // trigger immediately on first loop
@@ -166,6 +208,7 @@ impl App {
             process_details: None,
             journal_entries: None,
             process_cpu_history: VecDeque::with_capacity(600),
+            process_cpu_history_sum: 0.0,
             process_mem_history: VecDeque::with_capacity(600),
             process_io_read_history: VecDeque::with_capacity(600),
             process_io_write_history: VecDeque::with_capacity(600),
@@ -186,6 +229,14 @@ impl App {
             verify_hostname: false,
             is_tls: false,
             has_token: false,
+            header_title: String::new(),
+            header_title_key: (String::new(), false, false),
+            header_intervals_text: String::new(),
+            header_intervals_key: (u128::MAX, u128::MAX),
+            net_dl_title: String::new(),
+            net_dl_key: (u64::MAX, u64::MAX),
+            net_ul_title: String::new(),
+            net_ul_key: (u64::MAX, u64::MAX),
             modal_manager: ModalManager::new(),
             connection_state: ConnectionState::Disconnected,
             last_connection_attempt: Instant::now(),
@@ -465,7 +516,10 @@ impl App {
         _url: &str,
         _tls_ca: Option<&str>,
         _verify_hostname: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Handle input for modal
             while event::poll(Duration::from_millis(10))? {
@@ -572,7 +626,10 @@ impl App {
         &mut self,
         terminal: &mut Terminal<B>,
         mut ws: SocktopConnector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Main event loop
             let result = self.run_event_loop_iteration(terminal, &mut ws).await;
@@ -592,7 +649,10 @@ impl App {
         &mut self,
         terminal: &mut Terminal<B>,
         ws: &mut SocktopConnector,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
         loop {
             // Input (non-blocking)
             while event::poll(Duration::from_millis(10))? {
@@ -665,6 +725,7 @@ impl App {
                                     // Exit search mode
                                     self.process_search_active = false;
                                     self.process_search_query.clear();
+                                    self.invalidate_procs_filter();
                                     continue;
                                 }
                                 KeyCode::Enter => {
@@ -672,27 +733,24 @@ impl App {
                                     self.process_search_active = false;
 
                                     // Auto-select first filtered result
-                                    if let Some(m) = self.last_metrics.as_ref() {
-                                        let idxs = get_filtered_sorted_indices(
-                                            m,
-                                            &self.process_search_query,
-                                            self.procs_sort_by,
-                                        );
-                                        if !idxs.is_empty() {
-                                            let first_idx = idxs[0];
-                                            self.selected_process_index = Some(first_idx);
-                                            self.selected_process_pid =
-                                                Some(m.top_processes[first_idx].pid);
-                                        }
+                                    let first = self.procs_filter().first().copied();
+                                    if let (Some(first_idx), Some(m)) =
+                                        (first, self.last_metrics.as_ref())
+                                    {
+                                        self.selected_process_index = Some(first_idx);
+                                        self.selected_process_pid =
+                                            Some(m.top_processes[first_idx].pid);
                                     }
                                     continue;
                                 }
                                 KeyCode::Backspace => {
                                     self.process_search_query.pop();
+                                    self.invalidate_procs_filter();
                                     continue;
                                 }
                                 KeyCode::Char(c) => {
                                     self.process_search_query.push(c);
+                                    self.invalidate_procs_filter();
                                     continue;
                                 }
                                 KeyCode::Up | KeyCode::Down => {
@@ -728,6 +786,7 @@ impl App {
                             self.process_search_query.clear();
                             self.selected_process_pid = None;
                             self.selected_process_index = None;
+                            self.invalidate_procs_filter();
                             continue;
                         }
 
@@ -760,6 +819,10 @@ impl App {
                             .split(rows[1]);
                         let content = per_core_content_area(top[1]);
 
+                        // Refresh the filtered+sorted index cache once before we
+                        // borrow individual fields of `self`.
+                        let _ = self.procs_filter();
+
                         // First try process selection (only handles arrows if a process is selected)
                         let process_handled = if self.last_procs_area.is_some() {
                             processes_handle_key_with_selection(ProcessKeyParams {
@@ -767,8 +830,7 @@ impl App {
                                 selected_process_index: &mut self.selected_process_index,
                                 key: k,
                                 metrics: self.last_metrics.as_ref(),
-                                sort_by: self.procs_sort_by,
-                                search_query: &self.process_search_query,
+                                filtered_indices: &self.procs_filtered,
                             })
                         } else {
                             false
@@ -786,14 +848,9 @@ impl App {
                         // Auto-scroll to keep selected process visible
                         if let (Some(selected_idx), Some(p_area)) =
                             (self.selected_process_index, self.last_procs_area)
-                            && let Some(m) = self.last_metrics.as_ref()
+                            && self.last_metrics.is_some()
                         {
-                            // Get filtered and sorted indices (same as display)
-                            let idxs = get_filtered_sorted_indices(
-                                m,
-                                &self.process_search_query,
-                                self.procs_sort_by,
-                            );
+                            let idxs = &self.procs_filtered;
 
                             // Find the display position of the selected process in filtered list
                             if let Some(display_pos) =
@@ -903,11 +960,17 @@ impl App {
                             content.height as usize,
                         );
 
+                        // Refresh filter cache before partial borrows of self.
+                        let _ = self.procs_filter();
+                        let search_box_visible =
+                            self.process_search_active || !self.process_search_query.is_empty();
+
                         // Processes table: sort by column on header click and handle row selection
-                        if let (Some(mm), Some(p_area)) =
+                        if let (Some(_mm), Some(p_area)) =
                             (self.last_metrics.as_ref(), self.last_procs_area)
                         {
                             use crate::ui::processes::ProcessMouseParams;
+                            let total_rows = self.procs_filtered.len();
                             if let Some(new_sort) =
                                 processes_handle_mouse_with_selection(ProcessMouseParams {
                                     scroll_offset: &mut self.procs_scroll_offset,
@@ -916,13 +979,14 @@ impl App {
                                     drag: &mut self.procs_drag,
                                     mouse: m,
                                     area: p_area,
-                                    total_rows: mm.top_processes.len(),
+                                    total_rows,
                                     metrics: self.last_metrics.as_ref(),
-                                    sort_by: self.procs_sort_by,
-                                    search_query: &self.process_search_query,
+                                    search_box_visible,
+                                    filtered_indices: &self.procs_filtered,
                                 })
                             {
                                 self.procs_sort_by = new_sort;
+                                self.invalidate_procs_filter();
                             }
                         }
 
@@ -959,22 +1023,36 @@ impl App {
 
                     // Only poll processes every 2s
                     if self.last_procs_poll.elapsed() >= self.procs_interval {
+                        let mut updated = false;
                         if let Ok(AgentResponse::Processes(procs)) =
                             ws.request(AgentRequest::Processes).await
                             && let Some(mm) = self.last_metrics.as_mut()
                         {
                             mm.top_processes = procs.top_processes;
                             mm.process_count = Some(procs.process_count);
+                            updated = true;
+                        }
+                        if updated {
+                            self.invalidate_procs_filter();
+                            // Rebuild the pre-formatted row cache for the next
+                            // ~N frames. Done once per poll, not per frame.
+                            if let Some(mm) = self.last_metrics.as_ref() {
+                                self.procs_row_peak_cpu = crate::ui::processes::rebuild_row_cache(
+                                    mm,
+                                    &mut self.procs_row_cache,
+                                );
+                            }
                         }
                         self.last_procs_poll = Instant::now();
                     }
 
                     // Only poll disks every 5s
                     if self.last_disks_poll.elapsed() >= self.disks_interval {
-                        if let Ok(AgentResponse::Disks(disks)) =
+                        if let Ok(AgentResponse::Disks(mut disks)) =
                             ws.request(AgentRequest::Disks).await
                             && let Some(mm) = self.last_metrics.as_mut()
                         {
+                            dedup_disks(&mut disks);
                             mm.disks = disks;
                         }
                         self.last_disks_poll = Instant::now();
@@ -1000,7 +1078,14 @@ impl App {
                                     Ok(Ok(AgentResponse::ProcessMetrics(details))) => {
                                         // Update history for sparklines
                                         let cpu_usage = details.process.cpu_usage;
-                                        push_capped(&mut self.process_cpu_history, cpu_usage, 600);
+                                        let evicted_cpu = push_capped(
+                                            &mut self.process_cpu_history,
+                                            cpu_usage,
+                                            600,
+                                        );
+                                        self.process_cpu_history_sum = self.process_cpu_history_sum
+                                            + cpu_usage
+                                            - evicted_cpu.unwrap_or(0.0);
 
                                         let mem_bytes = details.process.mem_bytes;
                                         push_capped(&mut self.process_mem_history, mem_bytes, 600);
@@ -1105,11 +1190,37 @@ impl App {
         Ok(())
     }
 
+    /// Mark the filtered-process cache stale. Call this whenever
+    /// `procs_sort_by`, `process_search_query`, or the top_processes content
+    /// changes — the cache is rebuilt lazily on the next read.
+    pub fn invalidate_procs_filter(&mut self) {
+        self.procs_filter_dirty = true;
+    }
+
+    /// Lazily refresh and return the cached filtered+sorted process indices.
+    /// Empty slice when there are no metrics yet.
+    pub fn procs_filter(&mut self) -> &[usize] {
+        if self.procs_filter_dirty {
+            self.procs_filtered.clear();
+            if let Some(m) = self.last_metrics.as_ref() {
+                crate::ui::processes::fill_filtered_sorted_indices(
+                    m,
+                    &self.process_search_query,
+                    self.procs_sort_by,
+                    &mut self.procs_filtered,
+                );
+            }
+            self.procs_filter_dirty = false;
+        }
+        &self.procs_filtered
+    }
+
     /// Clear process details when modal is closed or selection changes
     pub fn clear_process_details(&mut self) {
         self.process_details = None;
         self.journal_entries = None;
         self.process_cpu_history.clear();
+        self.process_cpu_history_sum = 0.0;
         self.process_mem_history.clear();
         self.process_io_read_history.clear();
         self.process_io_write_history.clear();
@@ -1120,23 +1231,24 @@ impl App {
     }
 
     fn update_with_metrics(&mut self, mut m: Metrics) {
-        if let Some(prev) = &self.last_metrics {
-            // Preserve slower fields when the fast payload omits them
+        if let Some(prev) = self.last_metrics.as_mut() {
+            // Preserve slower fields when the fast payload omits them.
+            // prev is about to be dropped so we can move its Vecs instead of cloning.
             if m.disks.is_empty() {
-                m.disks = prev.disks.clone();
+                m.disks = std::mem::take(&mut prev.disks);
             }
             if m.top_processes.is_empty() {
-                m.top_processes = prev.top_processes.clone();
+                m.top_processes = std::mem::take(&mut prev.top_processes);
             }
-            // Preserve total processes count across fast updates
             if m.process_count.is_none() {
                 m.process_count = prev.process_count;
             }
         }
 
-        // CPU avg history
+        // CPU avg history with running sum
         let v = m.cpu_total.clamp(0.0, 100.0).round() as u64;
-        push_capped(&mut self.cpu_hist, v, 600);
+        let evicted = push_capped(&mut self.cpu_hist, v, 600);
+        self.cpu_hist_sum = self.cpu_hist_sum + v - evicted.unwrap_or(0);
 
         // Per-core history (push current samples)
         self.per_core_hist.ensure_cores(m.cpu_per_core.len());
@@ -1179,16 +1291,31 @@ impl App {
             ])
             .split(area);
 
-        // Header
-        draw_header(
-            f,
-            rows[0],
-            self.last_metrics.as_ref(),
-            self.is_tls,
-            self.has_token,
-            self.metrics_interval,
-            self.procs_interval,
-        );
+        // Header — refresh cached strings only when their inputs change so the
+        // ratatui diff renderer can suppress repaints on idle frames.
+        {
+            let hostname = self.last_metrics.as_ref().map(|mm| mm.hostname.as_str());
+            let key = (
+                hostname.unwrap_or("").to_string(),
+                self.is_tls,
+                self.has_token,
+            );
+            if self.header_title_key != key {
+                self.header_title = build_header_title(hostname, self.is_tls, self.has_token);
+                self.header_title_key = key;
+            }
+
+            let intervals_key = (
+                self.metrics_interval.as_millis(),
+                self.procs_interval.as_millis(),
+            );
+            if self.header_intervals_key != intervals_key {
+                self.header_intervals_text =
+                    build_header_intervals(intervals_key.0, intervals_key.1);
+                self.header_intervals_key = intervals_key;
+            }
+        }
+        draw_header(f, rows[0], &self.header_title, &self.header_intervals_text);
 
         // Top row: left CPU avg, right Per-core (full top-right)
         let top_lr = ratatui::layout::Layout::default()
@@ -1196,12 +1323,18 @@ impl App {
             .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
             .split(rows[1]);
 
-        draw_cpu_avg_graph(f, top_lr[0], &self.cpu_hist, self.last_metrics.as_ref());
+        draw_cpu_avg_graph(
+            f,
+            top_lr[0],
+            &mut self.cpu_hist,
+            self.cpu_hist_sum,
+            self.last_metrics.as_ref(),
+        );
         draw_per_core_bars(
             f,
             top_lr[1],
             self.last_metrics.as_ref(),
-            &self.per_core_hist,
+            &mut self.per_core_hist,
             self.per_core_scroll,
         );
 
@@ -1245,26 +1378,33 @@ impl App {
             .split(bottom_lr[0]);
 
         draw_disks(f, left_stack[0], self.last_metrics.as_ref());
+
+        // Net titles only change when the throughput or peak changes.
+        let rx_now = self.rx_hist.back().copied().unwrap_or(0);
+        let rx_key = (rx_now, self.rx_peak);
+        if self.net_dl_key != rx_key {
+            self.net_dl_title = format!("Download (KB/s) — now: {rx_now} | peak: {}", self.rx_peak);
+            self.net_dl_key = rx_key;
+        }
         draw_net_spark(
             f,
             left_stack[1],
-            &format!(
-                "Download (KB/s) — now: {} | peak: {}",
-                self.rx_hist.back().copied().unwrap_or(0),
-                self.rx_peak
-            ),
-            &self.rx_hist,
+            &self.net_dl_title,
+            &mut self.rx_hist,
             ratatui::style::Color::Green,
         );
+
+        let tx_now = self.tx_hist.back().copied().unwrap_or(0);
+        let tx_key = (tx_now, self.tx_peak);
+        if self.net_ul_key != tx_key {
+            self.net_ul_title = format!("Upload (KB/s) — now: {tx_now} | peak: {}", self.tx_peak);
+            self.net_ul_key = tx_key;
+        }
         draw_net_spark(
             f,
             left_stack[2],
-            &format!(
-                "Upload (KB/s) — now: {} | peak: {}",
-                self.tx_hist.back().copied().unwrap_or(0),
-                self.tx_peak
-            ),
-            &self.tx_hist,
+            &self.net_ul_title,
+            &mut self.tx_hist,
             ratatui::style::Color::Blue,
         );
 
@@ -1272,6 +1412,8 @@ impl App {
         let procs_area = bottom_lr[1];
         // Cache for input handlers
         self.last_procs_area = Some(procs_area);
+        // Refresh the filter cache before partial borrows of self.
+        let _ = self.procs_filter();
         crate::ui::processes::draw_top_processes(
             f,
             procs_area,
@@ -1283,6 +1425,9 @@ impl App {
                 selected_process_index: self.selected_process_index,
                 search_query: &self.process_search_query,
                 search_active: self.process_search_active,
+                filtered_indices: &self.procs_filtered,
+                cached_rows: &self.procs_row_cache,
+                peak_cpu: self.procs_row_peak_cpu,
             },
         );
 
@@ -1296,6 +1441,7 @@ impl App {
                     journal: self.journal_entries.as_ref(),
                     history: ProcessHistoryData {
                         cpu: &self.process_cpu_history,
+                        cpu_sum: self.process_cpu_history_sum,
                         mem: &self.process_mem_history,
                         io_read: &self.process_io_read_history,
                         io_write: &self.process_io_write_history,
@@ -1310,66 +1456,6 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self {
-            last_metrics: None,
-            cpu_hist: VecDeque::with_capacity(600),
-            per_core_hist: PerCoreHistory::new(60),
-            last_net_totals: None,
-            rx_hist: VecDeque::with_capacity(600),
-            tx_hist: VecDeque::with_capacity(600),
-            rx_peak: 0,
-            tx_peak: 0,
-            should_quit: false,
-            per_core_scroll: 0,
-            per_core_drag: None,
-            procs_scroll_offset: 0,
-            procs_drag: None,
-            procs_sort_by: ProcSortBy::CpuDesc,
-            last_procs_area: None,
-            selected_process_pid: None,
-            selected_process_index: None,
-            prev_selected_process_pid: None,
-            process_search_active: false,
-            process_search_query: String::new(),
-            last_procs_poll: Instant::now()
-                .checked_sub(Duration::from_secs(2))
-                .unwrap_or_else(Instant::now), // trigger immediately on first loop
-            last_disks_poll: Instant::now()
-                .checked_sub(Duration::from_secs(5))
-                .unwrap_or_else(Instant::now),
-            procs_interval: Duration::from_secs(2),
-            disks_interval: Duration::from_secs(5),
-            metrics_interval: Duration::from_millis(500),
-            process_details: None,
-            journal_entries: None,
-            process_cpu_history: VecDeque::with_capacity(600),
-            process_mem_history: VecDeque::with_capacity(600),
-            process_io_read_history: VecDeque::with_capacity(600),
-            process_io_write_history: VecDeque::with_capacity(600),
-            last_io_read_bytes: None,
-            last_io_write_bytes: None,
-            max_process_mem_bytes: 0,
-            process_details_unsupported: false,
-            last_process_details_poll: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-            last_journal_poll: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-            process_details_interval: Duration::from_millis(500),
-            journal_interval: Duration::from_secs(5),
-            ws_url: String::new(),
-            tls_ca: None,
-            verify_hostname: false,
-            is_tls: false,
-            has_token: false,
-            modal_manager: ModalManager::new(),
-            connection_state: ConnectionState::Disconnected,
-            last_connection_attempt: Instant::now(),
-            original_disconnect_time: None,
-            connection_retry_count: 0,
-            last_auto_retry: None,
-            replacement_connection: None,
-        }
+        Self::new()
     }
 }

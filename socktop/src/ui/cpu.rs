@@ -7,7 +7,9 @@ use ratatui::style::{Color, Style};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Sparkline},
+    widgets::{
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline,
+    },
 };
 
 use crate::history::PerCoreHistory;
@@ -133,11 +135,9 @@ pub fn per_core_handle_scrollbar_mouse(
     }
     let thumb_len = (track * view).div_ceil(total).max(1).min(track);
     let top_for_offset = |off: usize| -> usize {
-        if max_off == 0 {
-            0
-        } else {
-            ((track - thumb_len) * off + max_off / 2) / max_off
-        }
+        ((track - thumb_len) * off + max_off / 2)
+            .checked_div(max_off)
+            .unwrap_or(0)
     };
     let thumb_top = top_for_offset(offset);
 
@@ -190,11 +190,9 @@ pub fn per_core_handle_scrollbar_mouse(
                 // Inverse mapping top -> offset
                 if track > thumb_len {
                     let denom = track - thumb_len;
-                    offset = if max_off == 0 {
-                        0
-                    } else {
-                        (new_top * max_off + denom / 2) / denom
-                    };
+                    offset = (new_top * max_off + denom / 2)
+                        .checked_div(denom)
+                        .unwrap_or(0);
                 } else {
                     offset = 0;
                 }
@@ -234,18 +232,20 @@ pub fn per_core_clamp(scroll_offset: &mut usize, total_rows: usize, viewport_row
 }
 
 /// Draws the CPU average sparkline graph.
+///
+/// `hist_sum` is the running sum of `hist` maintained by the caller so we don't
+/// fold the (up to 600-element) deque on every frame.
 pub fn draw_cpu_avg_graph(
     f: &mut ratatui::Frame<'_>,
     area: Rect,
-    hist: &std::collections::VecDeque<u64>,
+    hist: &mut std::collections::VecDeque<u64>,
+    hist_sum: u64,
     m: Option<&Metrics>,
 ) {
-    // Calculate average CPU over the monitoring period
-    let avg_cpu = if !hist.is_empty() {
-        let sum: u64 = hist.iter().sum();
-        sum as f64 / hist.len() as f64
-    } else {
+    let avg_cpu = if hist.is_empty() {
         0.0
+    } else {
+        hist_sum as f64 / hist.len() as f64
     };
 
     let title = if let Some(mm) = m {
@@ -272,14 +272,16 @@ pub fn draw_cpu_avg_graph(
         String::new()
     };
 
+    // Hand a slice directly to Sparkline. `make_contiguous` is amortized cheap
+    // for our usage pattern (cap'd 600-element ring updated at 2 Hz) and lets
+    // us skip the per-frame Vec allocation .collect() used to do.
     let max_points = area.width.saturating_sub(2) as usize;
     let start = hist.len().saturating_sub(max_points);
-    let data: Vec<u64> = hist.iter().skip(start).cloned().collect();
+    let slice = &hist.make_contiguous()[start..];
 
-    // Render the sparkline with title on left
     let spark = Sparkline::default()
         .block(Block::default().borders(Borders::ALL).title(title))
-        .data(&data)
+        .data(slice)
         .max(100)
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(spark, area);
@@ -302,7 +304,7 @@ pub fn draw_per_core_bars(
     f: &mut ratatui::Frame<'_>,
     area: Rect,
     m: Option<&Metrics>,
-    per_core_hist: &PerCoreHistory,
+    per_core_hist: &mut PerCoreHistory,
     scroll_offset: usize,
 ) {
     f.render_widget(
@@ -347,7 +349,7 @@ pub fn draw_per_core_bars(
         let rect = vchunks[i];
         let hchunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(6), Constraint::Length(12)])
+            .constraints([Constraint::Min(6), Constraint::Length(13)])
             .split(rect);
 
         let curr = mm.cpu_per_core[idx].clamp(0.0, 100.0);
@@ -358,12 +360,17 @@ pub fn draw_per_core_bars(
             .map(|v| v as f32)
             .unwrap_or(curr);
 
+        // Trend indicator. Various Unicode glyphs we tried for the "flat"
+        // trend (╌, ·) substituted as a hyphen on terminals with narrow font
+        // coverage; combined with the next column being `100.0` they read as
+        // `cpu0 -100.0%`, a nonsensical negative percent. Use a literal space
+        // for the flat case — no character, no fallback, no confusion.
         let trend = if curr > older + 0.2 {
             "↑"
         } else if curr + 0.2 < older {
             "↓"
         } else {
-            "╌"
+            " "
         };
 
         let fg = match curr {
@@ -372,24 +379,24 @@ pub fn draw_per_core_bars(
             _ => Color::Red,
         };
 
-        let hist: Vec<u64> = per_core_hist
-            .deques
-            .get(idx)
-            .map(|d| {
-                let max_points = hchunks[0].width as usize;
-                let start = d.len().saturating_sub(max_points);
-                d.iter().skip(start).map(|&v| v as u64).collect()
-            })
-            .unwrap_or_default();
+        // Borrow the per-core deque mutably so we can hand a contiguous slice
+        // to Sparkline without allocating a fresh Vec each frame.
+        if let Some(d) = per_core_hist.deques.get_mut(idx) {
+            let max_points = hchunks[0].width as usize;
+            let start = d.len().saturating_sub(max_points);
+            let slice = &d.make_contiguous()[start..];
+            let spark = Sparkline::default()
+                .data(slice)
+                .max(100)
+                .style(Style::default().fg(fg));
+            f.render_widget(spark, hchunks[0]);
+        }
 
-        let spark = Sparkline::default()
-            .data(&hist)
-            .max(100)
-            .style(Style::default().fg(fg));
-
-        f.render_widget(spark, hchunks[0]);
-
-        let label = format!("cpu{idx:<2}{trend}{curr:>5.1}%");
+        // Hard space between the trend mark and the number — even if the
+        // arrow glyphs (↑/↓) fall back to ASCII on a terminal that lacks
+        // them, this space prevents the trend mark from visually joining
+        // `100.0` to look like a negative value.
+        let label = format!("cpu{idx:<2}{trend} {curr:>5.1}%");
         let line = Line::from(Span::styled(
             label,
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
@@ -397,38 +404,122 @@ pub fn draw_per_core_bars(
         f.render_widget(Paragraph::new(line).right_aligned(), hchunks[1]);
     }
 
-    // Custom 1-col scrollbar with arrows, track, and exact mapping
+    // 1-col scrollbar (ratatui built-in widget). Skips drawing when the
+    // content fits in the viewport, matching the previous behaviour.
     let scroll_area = Rect {
         x: inner.x + inner.width.saturating_sub(1),
         y: inner.y,
         width: 1,
         height: inner.height,
     };
-    if scroll_area.height >= 3 {
-        let track = (scroll_area.height - 2) as usize;
-        let total = total_rows.max(1);
-        let view = viewport_rows.clamp(1, total);
-        let max_off = total.saturating_sub(view);
+    let max_off = total_rows.saturating_sub(viewport_rows);
+    if scroll_area.height >= 3 && max_off > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .thumb_symbol("█")
+            .track_symbol(Some("│"))
+            .thumb_style(Style::default().fg(SB_THUMB))
+            .track_style(Style::default().fg(SB_TRACK))
+            .begin_style(Style::default().fg(SB_ARROW))
+            .end_style(Style::default().fg(SB_ARROW));
+        let mut state = ScrollbarState::new(max_off).position(offset);
+        f.render_stateful_widget(scrollbar, scroll_area, &mut state);
+    }
+}
 
-        let thumb_len = (track * view).div_ceil(total).max(1).min(track);
-        let thumb_top = if max_off == 0 {
-            0
-        } else {
-            ((track - thumb_len) * offset + max_off / 2) / max_off
-        };
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use socktop_connector::Metrics;
 
-        // Build lines: top arrow, track (with thumb), bottom arrow
-        let mut lines: Vec<Line> = Vec::with_capacity(scroll_area.height as usize);
-        lines.push(Line::from(Span::styled("▲", Style::default().fg(SB_ARROW))));
-        for i in 0..track {
-            if i >= thumb_top && i < thumb_top + thumb_len {
-                lines.push(Line::from(Span::styled("█", Style::default().fg(SB_THUMB))));
-            } else {
-                lines.push(Line::from(Span::styled("│", Style::default().fg(SB_TRACK))));
-            }
+    fn fake_metrics(cores: Vec<f32>) -> Metrics {
+        Metrics {
+            cpu_total: 0.0,
+            cpu_per_core: cores,
+            mem_total: 1024,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![],
+            gpus: None,
+            process_count: Some(0),
         }
-        lines.push(Line::from(Span::styled("▼", Style::default().fg(SB_ARROW))));
+    }
 
-        f.render_widget(Paragraph::new(lines), scroll_area);
+    fn dump(terminal: &Terminal<TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Regression: the "flat" trend glyph used to be `╌` (U+254C), then `·`
+    /// (U+00B7) — both substituted as a hyphen on terminals with narrow font
+    /// coverage. When a core sat at exactly 100% the label rendered as
+    /// `cpu3 -100.0%` (no space between trend and digits). Now we use a
+    /// literal space for the flat case AND insert a hard space between every
+    /// trend mark and the number, so no glyph substitution can produce a
+    /// "-100" substring. We assert that across flat AND transitioning cores.
+    #[test]
+    fn percore_label_never_renders_as_negative() {
+        let m = fake_metrics(vec![100.0, 100.0, 100.0, 100.0]);
+        let mut hist = PerCoreHistory::new(60);
+        hist.ensure_cores(4);
+        // First sample: history is empty, no trend on first frame.
+        hist.push_samples(&m.cpu_per_core);
+        // Second sample: identical values → flat trend (the user's complaint).
+        hist.push_samples(&m.cpu_per_core);
+
+        let backend = TestBackend::new(120, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw_per_core_bars(f, Rect::new(0, 0, 120, 8), Some(&m), &mut hist, 0);
+            })
+            .unwrap();
+
+        let out = dump(&terminal);
+        eprintln!("---flat 100% render---\n{out}");
+        assert!(!out.contains("-100"), "found '-100' in flat-trend render");
+
+        // Decreasing trend at saturation: hist was high, current drops a bit.
+        let mut hist2 = PerCoreHistory::new(60);
+        hist2.ensure_cores(4);
+        for _ in 0..25 {
+            hist2.push_samples(&[100.0, 100.0, 100.0, 100.0]);
+        }
+        let m2 = fake_metrics(vec![100.0, 100.0, 100.0, 80.0]);
+        hist2.push_samples(&m2.cpu_per_core);
+
+        let backend = TestBackend::new(120, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw_per_core_bars(f, Rect::new(0, 0, 120, 8), Some(&m2), &mut hist2, 0);
+            })
+            .unwrap();
+
+        let out = dump(&terminal);
+        eprintln!("---decreasing render---\n{out}");
+        assert!(
+            !out.contains("-100"),
+            "found '-100' in decreasing-trend render"
+        );
+        assert!(
+            !out.contains("-80"),
+            "found '-80' in decreasing-trend render"
+        );
     }
 }

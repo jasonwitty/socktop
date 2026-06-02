@@ -24,16 +24,11 @@ pub fn draw_disks(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         return;
     }
 
-    // Filter duplicates by keeping first occurrence of each unique name
-    let mut seen_names = std::collections::HashSet::new();
-    let unique_disks: Vec<_> = mm
-        .disks
-        .iter()
-        .filter(|d| seen_names.insert(d.name.clone()))
-        .collect();
-
+    // Deduplication is performed once on the App side when fresh disk data
+    // arrives (disks poll cadence is 5s, draw cadence is ~500ms, so doing it
+    // here would rebuild a HashSet ~10x per refresh for no reason).
     let per_disk_h = 3u16;
-    let max_cards = (inner.height / per_disk_h).min(unique_disks.len() as u16) as usize;
+    let max_cards = (inner.height / per_disk_h).min(mm.disks.len() as u16) as usize;
 
     let constraints: Vec<Constraint> = (0..max_cards)
         .map(|_| Constraint::Length(per_disk_h))
@@ -44,7 +39,7 @@ pub fn draw_disks(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         .split(inner);
 
     for (i, slot) in rows.iter().enumerate() {
-        let d = unique_disks[i];
+        let d = &mm.disks[i];
         let used = d.total.saturating_sub(d.available);
         let ratio = if d.total > 0 {
             used as f64 / d.total as f64
