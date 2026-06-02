@@ -1,4 +1,5 @@
 // gpu.rs
+#[cfg(feature = "gpu")]
 use gfxinfo::active_gpu;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -9,6 +10,7 @@ pub struct GpuMetrics {
     pub mem_total_bytes: u64,
 }
 
+#[cfg(feature = "gpu")]
 pub fn collect_all_gpus() -> Result<Vec<GpuMetrics>, Box<dyn std::error::Error>> {
     let gpu = active_gpu()?; // Use ? to unwrap Result
     let info = gpu.info();
@@ -21,4 +23,10 @@ pub fn collect_all_gpus() -> Result<Vec<GpuMetrics>, Box<dyn std::error::Error>>
     };
 
     Ok(vec![metrics])
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn collect_all_gpus() -> Result<Vec<GpuMetrics>, Box<dyn std::error::Error>> {
+    // GPU support not available on this platform
+    Ok(vec![])
 }

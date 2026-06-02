@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        # Remove user and group on purge
+        if getent passwd socktop >/dev/null; then
+            deluser --quiet socktop || true
+        fi
+
+        if getent group socktop >/dev/null; then
+            delgroup --quiet socktop || true
+        fi
+
+        # Remove state directory on purge
+        rm -rf /var/lib/socktop
+
+        # Remove config directory if empty
+        rmdir --ignore-fail-on-non-empty /etc/socktop 2>/dev/null || true
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Do nothing on remove/upgrade
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -2,6 +2,8 @@
 
 This guide explains how to cross-compile the socktop_agent on various host systems and deploy it to a Raspberry Pi. Cross-compiling is particularly useful for older or resource-constrained Pi models where native compilation might be slow.
 
+**Note:** GPU monitoring support is not available on ARMv7 (32-bit) and RISC-V architectures due to library limitations. When building for these platforms, the `--no-default-features` flag must be used to disable GPU support.
+
 ## Cross-Compilation Host Setup
 
 Choose your host operating system:
@@ -23,8 +25,9 @@ sudo apt update
 sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdrm-dev:arm64
 
 # For 32-bit Raspberry Pi (armv7)
+# Note: GPU support not available on armv7
 sudo apt update
-sudo apt install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libdrm-dev:armhf
+sudo apt install gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
 ```
 
 ### Setup Rust Cross-Compilation Targets
@@ -65,9 +68,8 @@ sudo pacman -S aarch64-linux-gnu-gcc
 yay -S aarch64-linux-gnu-libdrm
 
 # For 32-bit Raspberry Pi (armv7)
+# Note: GPU support not available on armv7
 sudo pacman -S arm-linux-gnueabihf-gcc
-# Install libdrm for armv7 using an AUR helper
-yay -S arm-linux-gnueabihf-libdrm
 ```
 
 ### Setup Rust Cross-Compilation Targets
@@ -114,8 +116,8 @@ cd path/to/socktop
 # For 64-bit Raspberry Pi
 docker run --rm -it -v "$(pwd)":/home/rust/src messense/rust-musl-cross:aarch64-musl cargo build --release --target aarch64-unknown-linux-musl -p socktop_agent
 
-# For 32-bit Raspberry Pi
-docker run --rm -it -v "$(pwd)":/home/rust/src messense/rust-musl-cross:armv7-musleabihf cargo build --release --target armv7-unknown-linux-musleabihf -p socktop_agent
+# For 32-bit Raspberry Pi (without GPU support)
+docker run --rm -it -v "$(pwd)":/home/rust/src messense/rust-musl-cross:armv7-musleabihf cargo build --release --target armv7-unknown-linux-musleabihf -p socktop_agent --no-default-features
 ```
 
 The compiled binaries will be available in your local target directory.
@@ -133,11 +135,11 @@ The recommended approach for Windows is to use Windows Subsystem for Linux (WSL2
 After setting up your environment, build the socktop_agent for your target Raspberry Pi:
 
 ```bash
-# For 64-bit Raspberry Pi
+# For 64-bit Raspberry Pi (with GPU support)
 cargo build --release --target aarch64-unknown-linux-gnu -p socktop_agent
 
-# For 32-bit Raspberry Pi
-cargo build --release --target armv7-unknown-linux-gnueabihf -p socktop_agent
+# For 32-bit Raspberry Pi (without GPU support)
+cargo build --release --target armv7-unknown-linux-gnueabihf -p socktop_agent --no-default-features
 ```
 
 ## Transfer the Binary to Your Raspberry Pi
@@ -161,11 +163,12 @@ SSH into your Raspberry Pi and install the required dependencies:
 ```bash
 ssh pi@raspberry-pi-ip
 
-# For Raspberry Pi OS (Debian-based)
+# For Raspberry Pi OS (Debian-based) - 64-bit only
+# (32-bit armv7 builds don't require these)
 sudo apt update
 sudo apt install libdrm-dev libdrm-amdgpu1
 
-# For Arch Linux ARM
+# For Arch Linux ARM - 64-bit only
 sudo pacman -Syu
 sudo pacman -S libdrm
 ```

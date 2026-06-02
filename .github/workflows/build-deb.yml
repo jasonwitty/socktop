@@ -1,0 +1,422 @@
+name: Build Debian Packages
+
+on:
+  # APT publishing is release-driven: we build + publish only on `v*` tag
+  # pushes. PRs into master still build the .debs as a sanity check (no
+  # publish). Manual dispatch is kept as an escape hatch.
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-deb:
+    name: Build .deb for ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+          - target: riscv64gc-unknown-linux-gnu
+            arch: riscv64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+
+      - name: Install cross-compilation tools (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          # Disable all existing sources and create new ones with proper arch specifications
+          sudo mv /etc/apt/sources.list /etc/apt/sources.list.backup
+          sudo mv /etc/apt/sources.list.d /etc/apt/sources.list.d.backup || true
+          sudo mkdir -p /etc/apt/sources.list.d
+          # Clear APT cache and lists
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo mkdir -p /var/lib/apt/lists/partial
+          # Create new sources.list with both amd64 and arm64
+          cat << EOF | sudo tee /etc/apt/sources.list
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu $(lsb_release -sc) main universe restricted multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu $(lsb_release -sc)-updates main universe restricted multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu $(lsb_release -sc)-backports main universe restricted multiverse
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu $(lsb_release -sc)-security main universe restricted multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc) main universe restricted multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-updates main universe restricted multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-backports main universe restricted multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -sc)-security main universe restricted multiverse
+          EOF
+          echo "=== Contents of /etc/apt/sources.list ==="
+          cat /etc/apt/sources.list
+          echo "=== Contents of /etc/apt/sources.list.d/ ==="
+          ls -la /etc/apt/sources.list.d/ || true
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libdrm-dev:arm64 libdrm-amdgpu1:arm64
+
+      - name: Install cross-compilation tools (ARMhf)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+
+      - name: Install cross-compilation tools (RISC-V)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu
+
+      - name: Install GPU libraries (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdrm-dev libdrm-amdgpu1
+
+      - name: Configure cross-compilation (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Configure cross-compilation (ARMhf)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.armv7-unknown-linux-gnueabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          EOF
+
+      - name: Configure cross-compilation (RISC-V)
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.riscv64gc-unknown-linux-gnu]
+          linker = "riscv64-linux-gnu-gcc"
+          EOF
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build socktop .deb package
+        run: |
+          cargo deb --package socktop --target ${{ matrix.target }} --no-strip
+
+      - name: Build socktop_agent .deb package (with GPU support)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
+
+      - name: Build socktop_agent .deb package (without GPU support)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf' || matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip --no-default-features
+
+      - name: Copy packages to debs directory
+        run: |
+          mkdir -p debs
+          cp target/${{ matrix.target }}/debian/*.deb debs/
+
+      - name: List generated packages
+        run: ls -lh debs/
+
+      - name: Upload .deb packages as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages-${{ matrix.arch }}
+          path: debs/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
+  # Combine all artifacts into a single downloadable archive
+  combine-artifacts:
+    name: Combine all .deb packages
+    needs: build-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AMD64 packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-amd64
+          path: all-debs
+
+      - name: Download ARM64 packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-arm64
+          path: all-debs
+
+      - name: Download ARMhf packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-armhf
+          path: all-debs
+
+      - name: Download RISC-V packages
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-packages-riscv64
+          path: all-debs
+
+      - name: List all packages
+        run: |
+          echo "All generated .deb packages:"
+          ls -lh all-debs/
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-debian-packages
+          path: all-debs/*.deb
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Generate checksums
+        run: |
+          cd all-debs
+          sha256sum *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: all-debs/SHA256SUMS
+          retention-days: 90
+
+  # Publish packages to gh-pages APT repository
+  publish-apt-repo:
+    name: Publish to APT Repository
+    needs: combine-artifacts
+    runs-on: ubuntu-latest
+    # Publish only on `v*` release tags — keep gh-pages stable between
+    # releases instead of overwriting same-version .debs on every commit.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          name: all-debian-packages
+          path: debs
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev gpg
+
+      - name: Checkout gh-pages branch
+        run: |
+          git fetch origin gh-pages:gh-pages || echo "gh-pages branch doesn't exist yet"
+          if git show-ref --verify --quiet refs/heads/gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . 2>/dev/null || true
+            # Create basic structure
+            mkdir -p dists/stable/main/{binary-amd64,binary-arm64,binary-armhf,binary-riscv64}
+            mkdir -p pool/main
+          fi
+
+      - name: Copy packages to pool
+        run: |
+          mkdir -p pool/main
+          cp debs/*.deb pool/main/
+          ls -lh pool/main/
+
+      - name: Generate Packages files
+        run: |
+          for arch in amd64 arm64 armhf riscv64; do
+            mkdir -p dists/stable/main/binary-$arch
+            dpkg-scanpackages --arch $arch pool/main /dev/null > dists/stable/main/binary-$arch/Packages 2>/dev/null || true
+            if [ -s dists/stable/main/binary-$arch/Packages ]; then
+              gzip -9 -k -f dists/stable/main/binary-$arch/Packages
+              echo "Generated Packages file for $arch"
+            fi
+          done
+
+      - name: Generate Release file
+        run: |
+          cat > dists/stable/Release << EOF
+          Origin: socktop
+          Label: socktop
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64 armhf riscv64
+          Components: main
+          Description: socktop APT repository
+          Date: $(date -Ru)
+          EOF
+
+          # Add MD5Sum
+          echo "MD5Sum:" >> dists/stable/Release
+          for arch in amd64 arm64 armhf riscv64; do
+            for file in dists/stable/main/binary-$arch/Packages*; do
+              if [ -f "$file" ]; then
+                md5sum "$file" | awk '{print " " $1, "'$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)'", "'"${file#dists/stable/}"'"}' >> dists/stable/Release
+              fi
+            done
+          done
+
+          # Add SHA256
+          echo "SHA256:" >> dists/stable/Release
+          for arch in amd64 arm64 armhf riscv64; do
+            for file in dists/stable/main/binary-$arch/Packages*; do
+              if [ -f "$file" ]; then
+                sha256sum "$file" | awk '{print " " $1, "'$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)'", "'"${file#dists/stable/}"'"}' >> dists/stable/Release
+              fi
+            done
+          done
+
+      - name: Set GPG available flag
+        id: check_gpg
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Import GPG key
+        if: steps.check_gpg.outputs.available == 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys
+
+      - name: Sign repository
+        if: steps.check_gpg.outputs.available == 'true'
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --no-tty --pinentry-mode loopback --passphrase-fd 0 \
+              --default-key "$GPG_KEY_ID" \
+              -abs -o dists/stable/Release.gpg dists/stable/Release
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --no-tty --pinentry-mode loopback --passphrase-fd 0 \
+              --default-key "$GPG_KEY_ID" \
+              --clearsign -o dists/stable/InRelease dists/stable/Release
+          else
+            gpg --batch --yes --no-tty --pinentry-mode loopback \
+              --default-key "$GPG_KEY_ID" \
+              -abs -o dists/stable/Release.gpg dists/stable/Release
+            gpg --batch --yes --no-tty --pinentry-mode loopback \
+              --default-key "$GPG_KEY_ID" \
+              --clearsign -o dists/stable/InRelease dists/stable/Release
+          fi
+          gpg --armor --export "$GPG_KEY_ID" > KEY.gpg
+          echo "✓ Repository signed"
+
+      - name: Create unsigned repository notice
+        if: steps.check_gpg.outputs.available == 'false'
+        run: |
+          echo "⚠️  Warning: GPG_PRIVATE_KEY not set. Repository will be UNSIGNED."
+          echo "⚠️  Add GPG secrets to sign the repository automatically."
+          echo "To add secrets: Settings → Secrets and variables → Actions → Repository secrets"
+
+      - name: Copy index.html if exists
+        run: |
+          git checkout ${{ github.ref_name }} -- index.html 2>/dev/null || echo "No index.html in source branch"
+
+      - name: Commit and push to gh-pages
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            COMMIT_MSG="Update APT repository"
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              COMMIT_MSG="$COMMIT_MSG - Release ${{ github.ref_name }}"
+            else
+              COMMIT_MSG="$COMMIT_MSG - $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            fi
+            git commit -m "$COMMIT_MSG"
+            git push origin gh-pages
+            echo "✓ Published to gh-pages"
+          fi
+
+  # Optional: Create a release with the .deb files if this is a tag
+  create-release:
+    name: Create GitHub Release
+    needs: combine-artifacts
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          name: all-debian-packages
+          path: release-debs
+
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+          path: release-debs
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-debs/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

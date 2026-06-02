@@ -53,13 +53,21 @@ exec bash   # or: exec zsh / exec fish
 
 Windows (for the brave): install from https://rustup.rs with the MSVC toolchain. Yes, you’ll need Visual Studio Build Tools. You chose Windows — enjoy the ride.
 
-### Raspberry Pi / Ubuntu / PopOS (required)
+### Raspberry Pi / Ubuntu / PopOS (required for GPU support)
 
-Install GPU support with apt command below
+**Note:** GPU monitoring is only supported on x86_64 and aarch64 (64-bit ARM) platforms. ARMv7 (32-bit) and RISC-V builds do not include GPU support.
+
+For 64-bit systems with GPU support:
 
 ```bash
 sudo apt-get update
 sudo apt-get install libdrm-dev libdrm-amdgpu1
+```
+
+For ARMv7 (32-bit Raspberry Pi), build with `--no-default-features` to disable GPU support:
+
+```bash
+cargo build --release -p socktop_agent --no-default-features
 ```
 
 _Additional note for Raspberry Pi users. Please update your system to use the newest kernel available through app, kernel version 6.6+ will use considerably less overall CPU to run the agent. For example on a rpi4 the kernel < 6.6 the agent will consume .8 cpu but on the same hardware on > 6.6 the agent will consume only .2 cpu. (these numbers indicate continuous polling at web socket endpoints, when not in use the usage is 0)_
