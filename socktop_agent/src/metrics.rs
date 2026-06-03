@@ -843,6 +843,13 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         let cache_cleanup_threshold = name_cache_cleanup_threshold();
 
         if total_count > proc_cache.names.len() + cache_cleanup_threshold {
+            // `now` is only consumed by the `tracing::debug!` below, so gate
+            // the binding with the same cfg as its consumer. Without this,
+            // a non-logging build (the default) emits an unused-variable
+            // warning. The Linux CI doesn't catch it because this block lives
+            // in the `#[cfg(not(target_os = "linux"))]` collect_processes_all —
+            // the warning only surfaces on the Windows build matrix.
+            #[cfg(feature = "logging")]
             let now = std::time::Instant::now();
             proc_cache
                 .names
