@@ -382,7 +382,16 @@ fn gather_intervals(
 async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let port = 3231;
     let url = format!("ws://127.0.0.1:{port}/ws");
-    let child = spawn_demo_agent(port)?;
+    let child = match spawn_demo_agent(port) {
+        Ok(child) => child,
+        // The agent ships as its own binary, so a missing one is a setup problem,
+        // not a crash: tell the user how to fix it instead of dumping an io error.
+        Err(e @ DemoAgentError::NotFound(_)) => {
+            eprintln!("{e}");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
     let mut app = App::new();
     // Demo mode connects to localhost, so disable hostname verification
     tokio::select! { res=app.run(&url,None,false)=>{ drop(child); res } _=tokio::signal::ctrl_c()=>{ drop(child); Ok(()) } }
@@ -399,9 +408,50 @@ impl Drop for DemoGuard {
         eprintln!("Stopped demo agent on port {}", self.port);
     }
 }
-fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> {
+#[derive(Debug)]
+enum DemoAgentError {
+    /// The socktop_agent executable could not be located.
+    NotFound(std::path::PathBuf),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for DemoAgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(candidate) => write!(
+                f,
+                "Could not start demo mode: '{}' was not found{}.\n\
+                 \n\
+                 Demo mode runs a local agent, which is shipped as a separate binary\n\
+                 and is not installed alongside the socktop TUI. Install it with:\n\
+                 \n    cargo install socktop_agent\n\n\
+                 then run socktop again. See {} for other install options.",
+                candidate.display(),
+                // A bare file name means find_agent_executable() fell back to a PATH lookup.
+                if candidate.parent().is_none_or(|p| p.as_os_str().is_empty()) {
+                    " on your PATH"
+                } else {
+                    ""
+                },
+                env!("CARGO_PKG_HOMEPAGE"),
+            ),
+            Self::Io(e) => write!(f, "Could not start demo mode: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DemoAgentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotFound(_) => None,
+            Self::Io(e) => Some(e),
+        }
+    }
+}
+
+fn spawn_demo_agent(port: u16) -> Result<DemoGuard, DemoAgentError> {
     let candidate = find_agent_executable();
-    let mut cmd = std::process::Command::new(candidate);
+    let mut cmd = std::process::Command::new(&candidate);
     cmd.arg("--port").arg(port.to_string());
     cmd.env("SOCKTOP_ENABLE_SSL", "0");
 
@@ -409,7 +459,10 @@ fn spawn_demo_agent(port: u16) -> Result<DemoGuard, Box<dyn std::error::Error>> 
     //cmd.env("SOCKTOP_AGENT_GPU", "0");
     //cmd.env("SOCKTOP_AGENT_TEMP", "0");
 
-    let child = cmd.spawn()?;
+    let child = cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => DemoAgentError::NotFound(candidate),
+        _ => DemoAgentError::Io(e),
+    })?;
     std::thread::sleep(std::time::Duration::from_millis(300));
     Ok(DemoGuard {
         port,
