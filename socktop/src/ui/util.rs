@@ -22,19 +22,6 @@ pub fn human(b: u64) -> String {
     format!("{tb:.2}TB")
 }
 
-pub fn truncate_middle(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    if max <= 3 {
-        return "...".into();
-    }
-    let keep = max - 3;
-    let left = keep / 2;
-    let right = keep - left;
-    format!("{}...{}", &s[..left], &s[s.len() - right..])
-}
-
 pub fn disk_icon(name: &str) -> &'static str {
     let n = name.to_ascii_lowercase();
     if n.contains(':') {

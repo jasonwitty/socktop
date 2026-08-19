@@ -1,7 +1,8 @@
 //! Disk cards with per-device gauge and title line.
 
 use crate::types::Metrics;
-use crate::ui::util::{disk_icon, human, truncate_middle};
+use crate::ui::fit::truncate_middle_cols;
+use crate::ui::util::{disk_icon, human};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
@@ -69,7 +70,7 @@ pub fn draw_disks(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             "{}{}{}{}  {} / {}  ({}%)",
             indent,
             disk_icon(&d.name),
-            truncate_middle(&d.name, (slot.width.saturating_sub(6)) as usize / 2),
+            truncate_middle_cols(&d.name, slot.width.saturating_sub(6) / 2),
             temp_str,
             human(used),
             human(d.total),

@@ -51,6 +51,11 @@ use socktop_connector::{
 const MIN_METRICS_INTERVAL_MS: u64 = 100;
 const MIN_PROCESSES_INTERVAL_MS: u64 = 200;
 
+/// Budget for one request/response round trip. Replies are matched to
+/// requests by order, so a request that never answers would otherwise hang
+/// `ws.next()` forever and freeze the TUI (raw mode even eats Ctrl+C).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Drop duplicate-name entries from a disks payload (the agent occasionally
 /// reports a partition twice). Done once when fresh disk data arrives so the
 /// per-frame draw path doesn't have to rebuild a HashSet.
@@ -58,6 +63,13 @@ fn dedup_disks(disks: &mut Vec<socktop_connector::DiskInfo>) {
     let mut seen: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(disks.len());
     disks.retain(|d| seen.insert(d.name.clone()));
+}
+
+/// Outcome of draining input: keep going, or restart the event loop because a
+/// reconnect installed a replacement connection.
+enum InputFlow {
+    Continue,
+    RestartConnection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -350,6 +362,16 @@ impl App {
                 self.connection_state = ConnectionState::Disconnected;
             }
         }
+    }
+
+    /// A request produced no reply in time. Any late reply would desync every
+    /// subsequent request/response on this stream (replies are matched to
+    /// requests purely by order), so treat the connection as poisoned and go
+    /// through the standard reconnect flow — a fresh stream is realigned by
+    /// construction.
+    async fn poison_connection(&mut self, what: &str) {
+        self.show_connection_error(format!("{what}; reconnecting…"));
+        self.retry_connection().await;
     }
 
     /// Mark connection as successful and dismiss any error modals
@@ -669,6 +691,337 @@ impl App {
         }
     }
 
+    /// Drains and handles every queued terminal event (keys, mouse). Returns
+    /// whether the caller must restart the event loop on a replacement
+    /// connection. Extracted from the loop body so the tick wait can process
+    /// input at ~30ms latency instead of letting it queue for a whole
+    /// metrics interval.
+    async fn drain_input<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<InputFlow, Box<dyn std::error::Error>>
+    where
+        <B as ratatui::backend::Backend>::Error: 'static,
+    {
+        // Drain everything already queued; the caller has verified (or will
+        // verify via poll) that input is or may be pending.
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                Event::Key(k) => {
+                    // Handle modal input first - if a modal consumes the input, don't process normal keys
+                    if self.modal_manager.is_active() {
+                        let action = self.modal_manager.handle_key(k.code);
+                        match action {
+                            ModalAction::ExitApp => {
+                                self.should_quit = true;
+                                continue; // Skip normal key processing
+                            }
+                            ModalAction::RetryConnection => {
+                                self.retry_connection().await;
+                                // Check if retry succeeded and we have a replacement connection
+                                if self.replacement_connection.is_some() {
+                                    // Restart the outer loop on the new connection
+                                    return Ok(InputFlow::RestartConnection);
+                                }
+                                continue; // Skip normal key processing
+                            }
+                            ModalAction::Cancel | ModalAction::Dismiss => {
+                                // If ProcessDetails modal was dismissed, clear the data to save resources
+                                if let Some(crate::ui::modal::ModalType::ProcessDetails {
+                                    ..
+                                }) = self.modal_manager.current_modal()
+                                {
+                                    self.clear_process_details();
+                                }
+                                // Modal was dismissed, skip normal key processing
+                                continue;
+                            }
+                            ModalAction::Confirm => {
+                                // Handle confirmation action here if needed in the future
+                            }
+                            ModalAction::SwitchToParentProcess(_current_pid) => {
+                                // Get parent PID from current process details
+                                if let Some(details) = &self.process_details
+                                    && let Some(parent_pid) = details.process.parent_pid
+                                {
+                                    // Clear current process details
+                                    self.clear_process_details();
+                                    // Update selected process to parent
+                                    self.selected_process_pid = Some(parent_pid);
+                                    // Open modal for parent process
+                                    self.modal_manager.push_modal(
+                                        crate::ui::modal::ModalType::ProcessDetails {
+                                            pid: parent_pid,
+                                        },
+                                    );
+                                }
+                                continue;
+                            }
+                            ModalAction::Handled => {
+                                // Modal consumed the key, don't pass to main window
+                                continue;
+                            }
+                            ModalAction::None => {
+                                // Modal didn't handle the key, pass through to normal handling
+                            }
+                        }
+                    }
+
+                    // Handle search mode
+                    if self.process_search_active {
+                        match k.code {
+                            KeyCode::Esc => {
+                                // Exit search mode
+                                self.process_search_active = false;
+                                self.process_search_query.clear();
+                                self.invalidate_procs_filter();
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                // Exit search mode, keep filter active, and auto-select first result
+                                self.process_search_active = false;
+
+                                // Auto-select first filtered result
+                                let first = self.procs_filter().first().copied();
+                                if let (Some(first_idx), Some(m)) =
+                                    (first, self.last_metrics.as_ref())
+                                {
+                                    self.selected_process_index = Some(first_idx);
+                                    self.selected_process_pid =
+                                        Some(m.top_processes[first_idx].pid);
+                                }
+                                continue;
+                            }
+                            KeyCode::Backspace => {
+                                self.process_search_query.pop();
+                                self.invalidate_procs_filter();
+                                continue;
+                            }
+                            KeyCode::Char(c) => {
+                                self.process_search_query.push(c);
+                                self.invalidate_procs_filter();
+                                continue;
+                            }
+                            KeyCode::Up | KeyCode::Down => {
+                                // Allow arrow keys to navigate even while in search mode
+                                // Fall through to normal navigation handling
+                            }
+                            _ => {
+                                continue; // Block other keys in search mode
+                            }
+                        }
+                    }
+
+                    // Normal key handling (only if no modal is active or modal didn't consume the key)
+                    if matches!(
+                        k.code,
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                    ) {
+                        self.should_quit = true;
+                    }
+
+                    // Activate search mode on '/' (clears query if starting new search, or edits existing)
+                    if matches!(k.code, KeyCode::Char('/')) {
+                        self.process_search_active = true;
+                        // Don't clear query - allow editing existing search
+                        continue;
+                    }
+
+                    // Clear search filter on 'c' or 'C' (when not in search mode)
+                    if matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                        && !self.process_search_query.is_empty()
+                        && !self.process_search_active
+                    {
+                        self.process_search_query.clear();
+                        self.selected_process_pid = None;
+                        self.selected_process_index = None;
+                        self.invalidate_procs_filter();
+                        continue;
+                    }
+
+                    // Show About modal on 'a' or 'A'
+                    if matches!(k.code, KeyCode::Char('a') | KeyCode::Char('A')) {
+                        self.modal_manager.push_modal(ModalType::About);
+                    }
+
+                    // Show Help modal on 'h' or 'H'
+                    if matches!(k.code, KeyCode::Char('h') | KeyCode::Char('H')) {
+                        self.modal_manager.push_modal(ModalType::Help);
+                    }
+
+                    // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
+                    let sz = terminal.size()?;
+                    let area = Rect::new(0, 0, sz.width, sz.height);
+                    let layout = self.layout(area);
+                    let content = per_core_content_area(layout.per_core);
+
+                    // Refresh the filtered+sorted index cache once before we
+                    // borrow individual fields of `self`.
+                    let _ = self.procs_filter();
+
+                    // First try process selection (only handles arrows if a process is selected)
+                    let process_handled = if self.last_procs_area.is_some() {
+                        processes_handle_key_with_selection(ProcessKeyParams {
+                            selected_process_pid: &mut self.selected_process_pid,
+                            selected_process_index: &mut self.selected_process_index,
+                            key: k,
+                            metrics: self.last_metrics.as_ref(),
+                            filtered_indices: &self.procs_filtered,
+                        })
+                    } else {
+                        false
+                    };
+
+                    // If process selection didn't handle it, use CPU scrolling
+                    if !process_handled {
+                        per_core_handle_key(&mut self.per_core_scroll, k, content.height as usize);
+                    }
+
+                    // Auto-scroll to keep selected process visible
+                    if let (Some(selected_idx), Some(p_area)) =
+                        (self.selected_process_index, self.last_procs_area)
+                        && self.last_metrics.is_some()
+                    {
+                        let idxs = &self.procs_filtered;
+
+                        // Find the display position of the selected process in filtered list
+                        if let Some(display_pos) = idxs.iter().position(|&idx| idx == selected_idx)
+                        {
+                            // Calculate viewport size
+                            // Account for: borders (2) + header (1) + search box if active (3)
+                            let extra_rows = if self.process_search_active
+                                || !self.process_search_query.is_empty()
+                            {
+                                3 // search box with border
+                            } else {
+                                0
+                            };
+                            let viewport_rows =
+                                p_area.height.saturating_sub(3 + extra_rows) as usize;
+
+                            // Adjust scroll offset to keep selection visible
+                            if display_pos < self.procs_scroll_offset {
+                                // Selection is above viewport, scroll up
+                                self.procs_scroll_offset = display_pos;
+                            } else if display_pos >= self.procs_scroll_offset + viewport_rows {
+                                // Selection is below viewport, scroll down
+                                self.procs_scroll_offset =
+                                    display_pos.saturating_sub(viewport_rows - 1);
+                            }
+                        }
+                    }
+
+                    // Check if process selection changed and clear details if so
+                    if self.selected_process_pid != self.prev_selected_process_pid {
+                        self.clear_process_details();
+                        self.prev_selected_process_pid = self.selected_process_pid;
+                    }
+
+                    // Check if Enter was pressed with a process selected
+                    if process_handled
+                        && k.code == KeyCode::Enter
+                        && let Some(selected_pid) = self.selected_process_pid
+                    {
+                        self.modal_manager
+                            .push_modal(ModalType::ProcessDetails { pid: selected_pid });
+                    }
+
+                    let total_rows = self
+                        .last_metrics
+                        .as_ref()
+                        .map(|mm| mm.cpu_per_core.len())
+                        .unwrap_or(0);
+                    per_core_clamp(
+                        &mut self.per_core_scroll,
+                        total_rows,
+                        content.height as usize,
+                    );
+                }
+                Event::Mouse(m) => {
+                    // If modal is active, don't handle mouse events on the main window
+                    if self.modal_manager.is_active() {
+                        continue;
+                    }
+
+                    // Layout to get areas
+                    let sz = terminal.size()?;
+                    let area = Rect::new(0, 0, sz.width, sz.height);
+                    let layout = self.layout(area);
+
+                    // Content wheel scrolling
+                    let content = per_core_content_area(layout.per_core);
+                    per_core_handle_mouse(
+                        &mut self.per_core_scroll,
+                        m,
+                        content,
+                        content.height as usize,
+                    );
+
+                    // Scrollbar clicks/drag
+                    let total_rows = self
+                        .last_metrics
+                        .as_ref()
+                        .map(|mm| mm.cpu_per_core.len())
+                        .unwrap_or(0);
+                    per_core_handle_scrollbar_mouse(
+                        &mut self.per_core_scroll,
+                        &mut self.per_core_drag,
+                        m,
+                        layout.per_core,
+                        total_rows,
+                    );
+
+                    // Clamp to bounds
+                    per_core_clamp(
+                        &mut self.per_core_scroll,
+                        total_rows,
+                        content.height as usize,
+                    );
+
+                    // Refresh filter cache before partial borrows of self.
+                    let _ = self.procs_filter();
+                    let search_box_visible =
+                        self.process_search_active || !self.process_search_query.is_empty();
+
+                    // Processes table: sort by column on header click and handle row selection
+                    if let (Some(_mm), Some(p_area)) =
+                        (self.last_metrics.as_ref(), self.last_procs_area)
+                    {
+                        use crate::ui::processes::ProcessMouseParams;
+                        let total_rows = self.procs_filtered.len();
+                        if let Some(new_sort) =
+                            processes_handle_mouse_with_selection(ProcessMouseParams {
+                                scroll_offset: &mut self.procs_scroll_offset,
+                                selected_process_pid: &mut self.selected_process_pid,
+                                selected_process_index: &mut self.selected_process_index,
+                                drag: &mut self.procs_drag,
+                                mouse: m,
+                                area: p_area,
+                                total_rows,
+                                metrics: self.last_metrics.as_ref(),
+                                search_box_visible,
+                                filtered_indices: &self.procs_filtered,
+                            })
+                        {
+                            self.procs_sort_by = new_sort;
+                            self.invalidate_procs_filter();
+                        }
+                    }
+
+                    // Check if process selection changed via mouse and clear details if so
+                    if self.selected_process_pid != self.prev_selected_process_pid {
+                        self.clear_process_details();
+                        self.prev_selected_process_pid = self.selected_process_pid;
+                    }
+                }
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
+        }
+
+        Ok(InputFlow::Continue)
+    }
+
     async fn run_event_loop_iteration<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
@@ -678,325 +1031,12 @@ impl App {
         <B as ratatui::backend::Backend>::Error: 'static,
     {
         loop {
-            // Input (non-blocking)
-            while event::poll(Duration::from_millis(10))? {
-                match event::read()? {
-                    Event::Key(k) => {
-                        // Handle modal input first - if a modal consumes the input, don't process normal keys
-                        if self.modal_manager.is_active() {
-                            let action = self.modal_manager.handle_key(k.code);
-                            match action {
-                                ModalAction::ExitApp => {
-                                    self.should_quit = true;
-                                    continue; // Skip normal key processing
-                                }
-                                ModalAction::RetryConnection => {
-                                    self.retry_connection().await;
-                                    // Check if retry succeeded and we have a replacement connection
-                                    if self.replacement_connection.is_some() {
-                                        // Signal that we want to restart with new connection
-                                        // Return from this iteration so the outer loop can restart
-                                        return Ok(());
-                                    }
-                                    continue; // Skip normal key processing
-                                }
-                                ModalAction::Cancel | ModalAction::Dismiss => {
-                                    // If ProcessDetails modal was dismissed, clear the data to save resources
-                                    if let Some(crate::ui::modal::ModalType::ProcessDetails {
-                                        ..
-                                    }) = self.modal_manager.current_modal()
-                                    {
-                                        self.clear_process_details();
-                                    }
-                                    // Modal was dismissed, skip normal key processing
-                                    continue;
-                                }
-                                ModalAction::Confirm => {
-                                    // Handle confirmation action here if needed in the future
-                                }
-                                ModalAction::SwitchToParentProcess(_current_pid) => {
-                                    // Get parent PID from current process details
-                                    if let Some(details) = &self.process_details
-                                        && let Some(parent_pid) = details.process.parent_pid
-                                    {
-                                        // Clear current process details
-                                        self.clear_process_details();
-                                        // Update selected process to parent
-                                        self.selected_process_pid = Some(parent_pid);
-                                        // Open modal for parent process
-                                        self.modal_manager.push_modal(
-                                            crate::ui::modal::ModalType::ProcessDetails {
-                                                pid: parent_pid,
-                                            },
-                                        );
-                                    }
-                                    continue;
-                                }
-                                ModalAction::Handled => {
-                                    // Modal consumed the key, don't pass to main window
-                                    continue;
-                                }
-                                ModalAction::None => {
-                                    // Modal didn't handle the key, pass through to normal handling
-                                }
-                            }
-                        }
-
-                        // Handle search mode
-                        if self.process_search_active {
-                            match k.code {
-                                KeyCode::Esc => {
-                                    // Exit search mode
-                                    self.process_search_active = false;
-                                    self.process_search_query.clear();
-                                    self.invalidate_procs_filter();
-                                    continue;
-                                }
-                                KeyCode::Enter => {
-                                    // Exit search mode, keep filter active, and auto-select first result
-                                    self.process_search_active = false;
-
-                                    // Auto-select first filtered result
-                                    let first = self.procs_filter().first().copied();
-                                    if let (Some(first_idx), Some(m)) =
-                                        (first, self.last_metrics.as_ref())
-                                    {
-                                        self.selected_process_index = Some(first_idx);
-                                        self.selected_process_pid =
-                                            Some(m.top_processes[first_idx].pid);
-                                    }
-                                    continue;
-                                }
-                                KeyCode::Backspace => {
-                                    self.process_search_query.pop();
-                                    self.invalidate_procs_filter();
-                                    continue;
-                                }
-                                KeyCode::Char(c) => {
-                                    self.process_search_query.push(c);
-                                    self.invalidate_procs_filter();
-                                    continue;
-                                }
-                                KeyCode::Up | KeyCode::Down => {
-                                    // Allow arrow keys to navigate even while in search mode
-                                    // Fall through to normal navigation handling
-                                }
-                                _ => {
-                                    continue; // Block other keys in search mode
-                                }
-                            }
-                        }
-
-                        // Normal key handling (only if no modal is active or modal didn't consume the key)
-                        if matches!(
-                            k.code,
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
-                        ) {
-                            self.should_quit = true;
-                        }
-
-                        // Activate search mode on '/' (clears query if starting new search, or edits existing)
-                        if matches!(k.code, KeyCode::Char('/')) {
-                            self.process_search_active = true;
-                            // Don't clear query - allow editing existing search
-                            continue;
-                        }
-
-                        // Clear search filter on 'c' or 'C' (when not in search mode)
-                        if matches!(k.code, KeyCode::Char('c') | KeyCode::Char('C'))
-                            && !self.process_search_query.is_empty()
-                            && !self.process_search_active
-                        {
-                            self.process_search_query.clear();
-                            self.selected_process_pid = None;
-                            self.selected_process_index = None;
-                            self.invalidate_procs_filter();
-                            continue;
-                        }
-
-                        // Show About modal on 'a' or 'A'
-                        if matches!(k.code, KeyCode::Char('a') | KeyCode::Char('A')) {
-                            self.modal_manager.push_modal(ModalType::About);
-                        }
-
-                        // Show Help modal on 'h' or 'H'
-                        if matches!(k.code, KeyCode::Char('h') | KeyCode::Char('H')) {
-                            self.modal_manager.push_modal(ModalType::Help);
-                        }
-
-                        // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
-                        let sz = terminal.size()?;
-                        let area = Rect::new(0, 0, sz.width, sz.height);
-                        let layout = self.layout(area);
-                        let content = per_core_content_area(layout.per_core);
-
-                        // Refresh the filtered+sorted index cache once before we
-                        // borrow individual fields of `self`.
-                        let _ = self.procs_filter();
-
-                        // First try process selection (only handles arrows if a process is selected)
-                        let process_handled = if self.last_procs_area.is_some() {
-                            processes_handle_key_with_selection(ProcessKeyParams {
-                                selected_process_pid: &mut self.selected_process_pid,
-                                selected_process_index: &mut self.selected_process_index,
-                                key: k,
-                                metrics: self.last_metrics.as_ref(),
-                                filtered_indices: &self.procs_filtered,
-                            })
-                        } else {
-                            false
-                        };
-
-                        // If process selection didn't handle it, use CPU scrolling
-                        if !process_handled {
-                            per_core_handle_key(
-                                &mut self.per_core_scroll,
-                                k,
-                                content.height as usize,
-                            );
-                        }
-
-                        // Auto-scroll to keep selected process visible
-                        if let (Some(selected_idx), Some(p_area)) =
-                            (self.selected_process_index, self.last_procs_area)
-                            && self.last_metrics.is_some()
-                        {
-                            let idxs = &self.procs_filtered;
-
-                            // Find the display position of the selected process in filtered list
-                            if let Some(display_pos) =
-                                idxs.iter().position(|&idx| idx == selected_idx)
-                            {
-                                // Calculate viewport size
-                                // Account for: borders (2) + header (1) + search box if active (3)
-                                let extra_rows = if self.process_search_active
-                                    || !self.process_search_query.is_empty()
-                                {
-                                    3 // search box with border
-                                } else {
-                                    0
-                                };
-                                let viewport_rows =
-                                    p_area.height.saturating_sub(3 + extra_rows) as usize;
-
-                                // Adjust scroll offset to keep selection visible
-                                if display_pos < self.procs_scroll_offset {
-                                    // Selection is above viewport, scroll up
-                                    self.procs_scroll_offset = display_pos;
-                                } else if display_pos >= self.procs_scroll_offset + viewport_rows {
-                                    // Selection is below viewport, scroll down
-                                    self.procs_scroll_offset =
-                                        display_pos.saturating_sub(viewport_rows - 1);
-                                }
-                            }
-                        }
-
-                        // Check if process selection changed and clear details if so
-                        if self.selected_process_pid != self.prev_selected_process_pid {
-                            self.clear_process_details();
-                            self.prev_selected_process_pid = self.selected_process_pid;
-                        }
-
-                        // Check if Enter was pressed with a process selected
-                        if process_handled
-                            && k.code == KeyCode::Enter
-                            && let Some(selected_pid) = self.selected_process_pid
-                        {
-                            self.modal_manager
-                                .push_modal(ModalType::ProcessDetails { pid: selected_pid });
-                        }
-
-                        let total_rows = self
-                            .last_metrics
-                            .as_ref()
-                            .map(|mm| mm.cpu_per_core.len())
-                            .unwrap_or(0);
-                        per_core_clamp(
-                            &mut self.per_core_scroll,
-                            total_rows,
-                            content.height as usize,
-                        );
-                    }
-                    Event::Mouse(m) => {
-                        // If modal is active, don't handle mouse events on the main window
-                        if self.modal_manager.is_active() {
-                            continue;
-                        }
-
-                        // Layout to get areas
-                        let sz = terminal.size()?;
-                        let area = Rect::new(0, 0, sz.width, sz.height);
-                        let layout = self.layout(area);
-
-                        // Content wheel scrolling
-                        let content = per_core_content_area(layout.per_core);
-                        per_core_handle_mouse(
-                            &mut self.per_core_scroll,
-                            m,
-                            content,
-                            content.height as usize,
-                        );
-
-                        // Scrollbar clicks/drag
-                        let total_rows = self
-                            .last_metrics
-                            .as_ref()
-                            .map(|mm| mm.cpu_per_core.len())
-                            .unwrap_or(0);
-                        per_core_handle_scrollbar_mouse(
-                            &mut self.per_core_scroll,
-                            &mut self.per_core_drag,
-                            m,
-                            layout.per_core,
-                            total_rows,
-                        );
-
-                        // Clamp to bounds
-                        per_core_clamp(
-                            &mut self.per_core_scroll,
-                            total_rows,
-                            content.height as usize,
-                        );
-
-                        // Refresh filter cache before partial borrows of self.
-                        let _ = self.procs_filter();
-                        let search_box_visible =
-                            self.process_search_active || !self.process_search_query.is_empty();
-
-                        // Processes table: sort by column on header click and handle row selection
-                        if let (Some(_mm), Some(p_area)) =
-                            (self.last_metrics.as_ref(), self.last_procs_area)
-                        {
-                            use crate::ui::processes::ProcessMouseParams;
-                            let total_rows = self.procs_filtered.len();
-                            if let Some(new_sort) =
-                                processes_handle_mouse_with_selection(ProcessMouseParams {
-                                    scroll_offset: &mut self.procs_scroll_offset,
-                                    selected_process_pid: &mut self.selected_process_pid,
-                                    selected_process_index: &mut self.selected_process_index,
-                                    drag: &mut self.procs_drag,
-                                    mouse: m,
-                                    area: p_area,
-                                    total_rows,
-                                    metrics: self.last_metrics.as_ref(),
-                                    search_box_visible,
-                                    filtered_indices: &self.procs_filtered,
-                                })
-                            {
-                                self.procs_sort_by = new_sort;
-                                self.invalidate_procs_filter();
-                            }
-                        }
-
-                        // Check if process selection changed via mouse and clear details if so
-                        if self.selected_process_pid != self.prev_selected_process_pid {
-                            self.clear_process_details();
-                            self.prev_selected_process_pid = self.selected_process_pid;
-                        }
-                    }
-                    Event::Resize(_, _) => {}
-                    _ => {}
-                }
+            // Input: drain anything already queued
+            if matches!(
+                self.drain_input(terminal).await?,
+                InputFlow::RestartConnection
+            ) {
+                return Ok(());
             }
 
             // Check for automatic retry (every 30 seconds)
@@ -1013,163 +1053,227 @@ impl App {
                 break;
             }
 
-            // Fetch and update
-            match ws.request(AgentRequest::Metrics).await {
-                Ok(AgentResponse::Metrics(m)) => {
-                    self.mark_connected(); // Mark as connected on successful request
-                    self.update_with_metrics(m);
-
-                    // Only poll processes every 2s
-                    if self.last_procs_poll.elapsed() >= self.procs_interval {
-                        let mut updated = false;
-                        if let Ok(AgentResponse::Processes(procs)) =
-                            ws.request(AgentRequest::Processes).await
-                            && let Some(mm) = self.last_metrics.as_mut()
-                        {
-                            mm.top_processes = procs.top_processes;
-                            mm.process_count = Some(procs.process_count);
-                            updated = true;
-                        }
-                        if updated {
-                            self.invalidate_procs_filter();
-                            // Rebuild the pre-formatted row cache for the next
-                            // ~N frames. Done once per poll, not per frame.
-                            if let Some(mm) = self.last_metrics.as_ref() {
-                                self.procs_row_peak_cpu = crate::ui::processes::rebuild_row_cache(
-                                    mm,
-                                    &mut self.procs_row_cache,
-                                );
-                            }
-                        }
-                        self.last_procs_poll = Instant::now();
+            // Fetch and update. Skipped while disconnected — the retry paths
+            // (manual 'r' or the 30s auto-retry) own recovery, and hammering a
+            // dead socket with 5s-timeout requests would stall the loop. The
+            // shared draw + responsive wait below still run, so the error
+            // modal stays live and input stays snappy.
+            if self.connection_state == ConnectionState::Connected {
+                match timeout(REQUEST_TIMEOUT, ws.request(AgentRequest::Metrics)).await {
+                    Err(_) => {
+                        self.poison_connection("Metrics request timed out").await;
                     }
+                    Ok(Ok(AgentResponse::Metrics(m))) => {
+                        self.mark_connected(); // Mark as connected on successful request
+                        self.update_with_metrics(m);
 
-                    // Only poll disks every 5s
-                    if self.last_disks_poll.elapsed() >= self.disks_interval {
-                        if let Ok(AgentResponse::Disks(mut disks)) =
-                            ws.request(AgentRequest::Disks).await
-                            && let Some(mm) = self.last_metrics.as_mut()
-                        {
-                            dedup_disks(&mut disks);
-                            mm.disks = disks;
-                        }
-                        self.last_disks_poll = Instant::now();
-                    }
-
-                    // Poll process details when modal is active and process is selected
-                    if let Some(pid) = self.selected_process_pid {
-                        // Check if ProcessDetails modal is currently active
-                        if let Some(crate::ui::modal::ModalType::ProcessDetails { .. }) =
-                            self.modal_manager.current_modal()
-                        {
-                            // Poll process details every 500ms when modal is active
-                            if self.last_process_details_poll.elapsed()
-                                >= self.process_details_interval
+                        // Only poll processes every 2s
+                        if self.last_procs_poll.elapsed() >= self.procs_interval {
+                            let mut updated = false;
+                            match timeout(REQUEST_TIMEOUT, ws.request(AgentRequest::Processes))
+                                .await
                             {
-                                // Use timeout to prevent blocking the event loop
-                                match timeout(
-                                    Duration::from_millis(2000),
-                                    ws.request(AgentRequest::ProcessMetrics { pid }),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(AgentResponse::ProcessMetrics(details))) => {
-                                        // Update history for sparklines
-                                        let cpu_usage = details.process.cpu_usage;
-                                        let evicted_cpu = push_capped(
-                                            &mut self.process_cpu_history,
-                                            cpu_usage,
-                                            600,
-                                        );
-                                        self.process_cpu_history_sum = self.process_cpu_history_sum
-                                            + cpu_usage
-                                            - evicted_cpu.unwrap_or(0.0);
-
-                                        let mem_bytes = details.process.mem_bytes;
-                                        push_capped(&mut self.process_mem_history, mem_bytes, 600);
-
-                                        // Track maximum memory usage
-                                        if mem_bytes > self.max_process_mem_bytes {
-                                            self.max_process_mem_bytes = mem_bytes;
-                                        }
-
-                                        // I/O bytes from agent are cumulative, calculate deltas
-                                        if let Some(read) = details.process.read_bytes {
-                                            let delta = if let Some(last) = self.last_io_read_bytes
-                                            {
-                                                read.saturating_sub(last)
-                                            } else {
-                                                0 // First sample, no delta available
-                                            };
-                                            push_capped(
-                                                &mut self.process_io_read_history,
-                                                delta,
-                                                600,
-                                            );
-                                            self.last_io_read_bytes = Some(read);
-                                        }
-                                        if let Some(write) = details.process.write_bytes {
-                                            let delta = if let Some(last) = self.last_io_write_bytes
-                                            {
-                                                write.saturating_sub(last)
-                                            } else {
-                                                0 // First sample, no delta available
-                                            };
-                                            push_capped(
-                                                &mut self.process_io_write_history,
-                                                delta,
-                                                600,
-                                            );
-                                            self.last_io_write_bytes = Some(write);
-                                        }
-
-                                        self.process_details = Some(details);
-                                        self.process_details_unsupported = false;
-                                    }
-                                    Ok(Err(_)) | Err(_) => {
-                                        // Agent doesn't support this feature or timeout occurred
-                                        // Mark as unsupported so we can show appropriate message
-                                        self.process_details_unsupported = true;
-                                    }
-                                    Ok(Ok(_)) => {
-                                        // Wrong response type
-                                        self.process_details_unsupported = true;
+                                Err(_) => {
+                                    self.poison_connection("Processes request timed out").await;
+                                }
+                                Ok(Ok(AgentResponse::Processes(procs))) => {
+                                    if let Some(mm) = self.last_metrics.as_mut() {
+                                        mm.top_processes = procs.top_processes;
+                                        mm.process_count = Some(procs.process_count);
+                                        updated = true;
                                     }
                                 }
-                                self.last_process_details_poll = Instant::now();
+                                // Request error or wrong type: keep stale rows; a
+                                // broken socket surfaces on the next metrics tick.
+                                Ok(_) => {}
                             }
+                            if updated {
+                                self.invalidate_procs_filter();
+                                // Rebuild the pre-formatted row cache for the next
+                                // ~N frames. Done once per poll, not per frame.
+                                if let Some(mm) = self.last_metrics.as_ref() {
+                                    self.procs_row_peak_cpu =
+                                        crate::ui::processes::rebuild_row_cache(
+                                            mm,
+                                            &mut self.procs_row_cache,
+                                        );
+                                }
+                            }
+                            self.last_procs_poll = Instant::now();
+                        }
 
-                            // Poll journal entries every 5s when modal is active
-                            if self.last_journal_poll.elapsed() >= self.journal_interval {
-                                // Use timeout to prevent blocking the event loop
-                                match timeout(
-                                    Duration::from_millis(2000),
-                                    ws.request(AgentRequest::JournalEntries { pid }),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(AgentResponse::JournalEntries(journal))) => {
-                                        self.journal_entries = Some(journal);
-                                    }
-                                    Ok(Err(_)) | Err(_) | Ok(Ok(_)) => {
-                                        // Agent doesn't support this feature, error occurred, or wrong response type
-                                        // Keep journal_entries as None
+                        // Only poll disks every 5s
+                        if self.connection_state == ConnectionState::Connected
+                            && self.last_disks_poll.elapsed() >= self.disks_interval
+                        {
+                            match timeout(REQUEST_TIMEOUT, ws.request(AgentRequest::Disks)).await {
+                                Err(_) => {
+                                    self.poison_connection("Disks request timed out").await;
+                                }
+                                Ok(Ok(AgentResponse::Disks(mut disks))) => {
+                                    if let Some(mm) = self.last_metrics.as_mut() {
+                                        dedup_disks(&mut disks);
+                                        mm.disks = disks;
                                     }
                                 }
-                                self.last_journal_poll = Instant::now();
+                                Ok(_) => {}
+                            }
+                            self.last_disks_poll = Instant::now();
+                        }
+
+                        // Poll process details when modal is active and process is selected
+                        if let Some(pid) = self.selected_process_pid
+                            && self.connection_state == ConnectionState::Connected
+                        {
+                            // Check if ProcessDetails modal is currently active
+                            if let Some(crate::ui::modal::ModalType::ProcessDetails { .. }) =
+                                self.modal_manager.current_modal()
+                            {
+                                // Poll process details every 500ms when modal is
+                                // active. Skipped once the agent is known not to
+                                // support the endpoint (flag resets when the modal
+                                // closes or the selection changes, so a one-off
+                                // timeout doesn't disable details for the session).
+                                if self.connection_state == ConnectionState::Connected
+                                    && !self.process_details_unsupported
+                                    && self.last_process_details_poll.elapsed()
+                                        >= self.process_details_interval
+                                {
+                                    // Use timeout to prevent blocking the event loop
+                                    match timeout(
+                                        Duration::from_millis(2000),
+                                        ws.request(AgentRequest::ProcessMetrics { pid }),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(AgentResponse::ProcessMetrics(details))) => {
+                                            // Update history for sparklines
+                                            let cpu_usage = details.process.cpu_usage;
+                                            let evicted_cpu = push_capped(
+                                                &mut self.process_cpu_history,
+                                                cpu_usage,
+                                                600,
+                                            );
+                                            self.process_cpu_history_sum =
+                                                self.process_cpu_history_sum + cpu_usage
+                                                    - evicted_cpu.unwrap_or(0.0);
+
+                                            let mem_bytes = details.process.mem_bytes;
+                                            push_capped(
+                                                &mut self.process_mem_history,
+                                                mem_bytes,
+                                                600,
+                                            );
+
+                                            // Track maximum memory usage
+                                            if mem_bytes > self.max_process_mem_bytes {
+                                                self.max_process_mem_bytes = mem_bytes;
+                                            }
+
+                                            // I/O bytes from agent are cumulative, calculate deltas
+                                            if let Some(read) = details.process.read_bytes {
+                                                let delta =
+                                                    if let Some(last) = self.last_io_read_bytes {
+                                                        read.saturating_sub(last)
+                                                    } else {
+                                                        0 // First sample, no delta available
+                                                    };
+                                                push_capped(
+                                                    &mut self.process_io_read_history,
+                                                    delta,
+                                                    600,
+                                                );
+                                                self.last_io_read_bytes = Some(read);
+                                            }
+                                            if let Some(write) = details.process.write_bytes {
+                                                let delta =
+                                                    if let Some(last) = self.last_io_write_bytes {
+                                                        write.saturating_sub(last)
+                                                    } else {
+                                                        0 // First sample, no delta available
+                                                    };
+                                                push_capped(
+                                                    &mut self.process_io_write_history,
+                                                    delta,
+                                                    600,
+                                                );
+                                                self.last_io_write_bytes = Some(write);
+                                            }
+
+                                            self.process_details = Some(details);
+                                            self.process_details_unsupported = false;
+                                        }
+                                        Ok(Err(_)) => {
+                                            // Agent responded with an error: endpoint
+                                            // not supported.
+                                            self.process_details_unsupported = true;
+                                        }
+                                        Err(_) => {
+                                            // No reply at all: mark unsupported AND
+                                            // reconnect — a late reply would desync
+                                            // every later request on this stream.
+                                            self.process_details_unsupported = true;
+                                            self.poison_connection(
+                                                "Process details request timed out",
+                                            )
+                                            .await;
+                                        }
+                                        Ok(Ok(_)) => {
+                                            // Wrong response type
+                                            self.process_details_unsupported = true;
+                                        }
+                                    }
+                                    self.last_process_details_poll = Instant::now();
+                                }
+
+                                // Poll journal entries every 5s when modal is active.
+                                // Gated on the same unsupported flag: agents that lack
+                                // process details lack the journal endpoint too.
+                                if self.connection_state == ConnectionState::Connected
+                                    && !self.process_details_unsupported
+                                    && self.last_journal_poll.elapsed() >= self.journal_interval
+                                {
+                                    // Use timeout to prevent blocking the event loop
+                                    match timeout(
+                                        Duration::from_millis(2000),
+                                        ws.request(AgentRequest::JournalEntries { pid }),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(AgentResponse::JournalEntries(journal))) => {
+                                            self.journal_entries = Some(journal);
+                                        }
+                                        Err(_) => {
+                                            // No reply: poison the stream (see above).
+                                            self.poison_connection("Journal request timed out")
+                                                .await;
+                                        }
+                                        Ok(Err(_)) | Ok(Ok(_)) => {
+                                            // Endpoint unsupported or wrong type;
+                                            // keep journal_entries as None
+                                        }
+                                    }
+                                    self.last_journal_poll = Instant::now();
+                                }
                             }
                         }
                     }
+                    Ok(Err(e)) => {
+                        // Connection error - show modal if not already shown
+                        let error_message = format!("Failed to fetch metrics: {e}");
+                        self.show_connection_error(error_message);
+                    }
+                    Ok(_) => {
+                        // Unexpected response type
+                        self.show_connection_error("Unexpected response from agent".to_string());
+                    }
                 }
-                Err(e) => {
-                    // Connection error - show modal if not already shown
-                    let error_message = format!("Failed to fetch metrics: {e}");
-                    self.show_connection_error(error_message);
-                }
-                _ => {
-                    // Unexpected response type
-                    self.show_connection_error("Unexpected response from agent".to_string());
-                }
+            }
+
+            // A poisoned connection may have been replaced mid-iteration:
+            // restart on the fresh stream before issuing any more requests.
+            if self.replacement_connection.is_some() {
+                return Ok(());
             }
 
             // Update countdown for connection error modal if active
@@ -1181,8 +1285,27 @@ impl App {
             // Draw
             terminal.draw(|f| self.draw(f))?;
 
-            // Tick rate
-            sleep(self.metrics_interval).await;
+            // Tick wait, kept responsive: instead of sleeping the whole
+            // metrics interval (which queued keys/wheel events for up to
+            // 500ms and applied them in bursts), wait in ≤33ms slices and
+            // handle + repaint input the moment it arrives.
+            let deadline = Instant::now() + self.metrics_interval;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() || self.should_quit {
+                    break;
+                }
+                if !event::poll(remaining.min(Duration::from_millis(33)))? {
+                    continue;
+                }
+                if matches!(
+                    self.drain_input(terminal).await?,
+                    InputFlow::RestartConnection
+                ) {
+                    return Ok(());
+                }
+                terminal.draw(|f| self.draw(f))?;
+            }
         }
 
         Ok(())

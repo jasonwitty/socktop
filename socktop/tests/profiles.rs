@@ -8,6 +8,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 #[allow(dead_code)] // touch crate
 fn touch() {
     let _ = socktop::types::Metrics {
+        sampled_at_ms: None,
         cpu_total: 0.0,
         cpu_per_core: vec![],
         mem_total: 0,
