@@ -94,6 +94,12 @@ pub struct App {
     last_net_totals: Option<(u64, u64, Instant)>,
     // Agent-side sample timestamp of the previous snapshot (1.51+ agents).
     last_net_sampled_at_ms: Option<u64>,
+
+    // Consecutive metrics-request timeouts. One timeout gets a silent stream
+    // refresh; a second in a row means the agent accepts connections but
+    // never answers, and deserves a persistent error instead of an invisible
+    // reconnect loop that starves the UI.
+    consecutive_request_timeouts: u32,
     rx_hist: VecDeque<u64>,
     tx_hist: VecDeque<u64>,
     rx_peak: u64,
@@ -195,6 +201,7 @@ impl App {
             per_core_hist: PerCoreHistory::new(60),
             last_net_totals: None,
             last_net_sampled_at_ms: None,
+            consecutive_request_timeouts: 0,
             rx_hist: VecDeque::with_capacity(600),
             tx_hist: VecDeque::with_capacity(600),
             rx_peak: 0,
@@ -372,6 +379,30 @@ impl App {
     async fn poison_connection(&mut self, what: &str) {
         self.show_connection_error(format!("{what}; reconnecting…"));
         self.retry_connection().await;
+    }
+
+    /// Replace the connection WITHOUT any modal or state churn.
+    ///
+    /// For timeouts on the optional per-process endpoints: an old agent
+    /// ignores those messages entirely (no late reply, so no desync), but a
+    /// merely-slow agent would desync the stream — indistinguishable at
+    /// timeout time, so we still swap to a fresh stream, silently. The
+    /// ProcessDetails modal keeps showing its "Agent Update Required"
+    /// message instead of being buried under a connection-error modal.
+    /// Only a failed reconnect (connection genuinely dead) surfaces loudly.
+    async fn quiet_reconnect(&mut self) {
+        let tls_ca_ref = self.tls_ca.as_deref();
+        match self
+            .try_connect(&self.ws_url, tls_ca_ref, self.verify_hostname)
+            .await
+        {
+            Ok(ws) => {
+                self.replacement_connection = Some(ws);
+            }
+            Err(e) => {
+                self.show_connection_error(format!("Reconnect failed: {e}"));
+            }
+        }
     }
 
     /// Mark connection as successful and dismiss any error modals
@@ -1053,6 +1084,13 @@ impl App {
                 break;
             }
 
+            // Paint the current state BEFORE fetching: a request can stall for
+            // the full 5s timeout, and an iteration that ends in a poisoned-
+            // stream restart never reaches the draw at the bottom — without
+            // this, an agent that never answers left the screen permanently
+            // blank. (ratatui diffs make an unchanged repaint nearly free.)
+            terminal.draw(|f| self.draw(f))?;
+
             // Fetch and update. Skipped while disconnected — the retry paths
             // (manual 'r' or the 30s auto-retry) own recovery, and hammering a
             // dead socket with 5s-timeout requests would stall the loop. The
@@ -1061,10 +1099,22 @@ impl App {
             if self.connection_state == ConnectionState::Connected {
                 match timeout(REQUEST_TIMEOUT, ws.request(AgentRequest::Metrics)).await {
                     Err(_) => {
-                        self.poison_connection("Metrics request timed out").await;
+                        self.consecutive_request_timeouts += 1;
+                        if self.consecutive_request_timeouts >= 2 {
+                            // The agent accepts connections but never answers
+                            // (wrong protocol era, or wedged): reconnecting
+                            // can't help, so surface a persistent error and
+                            // leave recovery to the manual/auto retry paths.
+                            self.show_connection_error(
+                                "Agent is not responding to requests".to_string(),
+                            );
+                        } else {
+                            self.poison_connection("Metrics request timed out").await;
+                        }
                     }
                     Ok(Ok(AgentResponse::Metrics(m))) => {
                         self.mark_connected(); // Mark as connected on successful request
+                        self.consecutive_request_timeouts = 0;
                         self.update_with_metrics(m);
 
                         // Only poll processes every 2s
@@ -1209,14 +1259,14 @@ impl App {
                                             self.process_details_unsupported = true;
                                         }
                                         Err(_) => {
-                                            // No reply at all: mark unsupported AND
-                                            // reconnect — a late reply would desync
-                                            // every later request on this stream.
+                                            // No reply at all: old agents IGNORE
+                                            // this message, so show the "Agent
+                                            // Update Required" state and refresh
+                                            // the stream quietly (a merely-slow
+                                            // agent's late reply would otherwise
+                                            // desync it).
                                             self.process_details_unsupported = true;
-                                            self.poison_connection(
-                                                "Process details request timed out",
-                                            )
-                                            .await;
+                                            self.quiet_reconnect().await;
                                         }
                                         Ok(Ok(_)) => {
                                             // Wrong response type
@@ -1244,9 +1294,9 @@ impl App {
                                             self.journal_entries = Some(journal);
                                         }
                                         Err(_) => {
-                                            // No reply: poison the stream (see above).
-                                            self.poison_connection("Journal request timed out")
-                                                .await;
+                                            // No reply: same quiet stream refresh
+                                            // as the details endpoint above.
+                                            self.quiet_reconnect().await;
                                         }
                                         Ok(Err(_)) | Ok(Ok(_)) => {
                                             // Endpoint unsupported or wrong type;

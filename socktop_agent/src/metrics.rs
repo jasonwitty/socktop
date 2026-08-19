@@ -1161,10 +1161,17 @@ pub async fn collect_process_metrics(
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
         false,
+        // cmd/exe/cwd feed the modal's Command & Details pane. They're
+        // immutable per process, so OnlyIfNotSet reads them once per PID and
+        // serves the cache afterwards — the "minimal refresh" optimization
+        // had dropped them entirely, leaving the pane blank.
         ProcessRefreshKind::nothing()
             .with_memory()
             .with_cpu()
-            .with_disk_usage(),
+            .with_disk_usage()
+            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_cwd(sysinfo::UpdateKind::OnlyIfNotSet),
     );
 
     let process = system

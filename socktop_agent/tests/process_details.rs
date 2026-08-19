@@ -87,3 +87,19 @@ async fn test_collect_journal_entries_invalid_pid() {
         }
     }
 }
+
+/// The Command & Details pane went blank when the minimal-refresh
+/// optimization dropped cmd from the detail endpoint's refresh kind.
+#[tokio::test]
+async fn test_process_metrics_include_command() {
+    let state = AppState::new();
+    let pid = std::process::id();
+    let resp = collect_process_metrics(pid, &state)
+        .await
+        .expect("collect self");
+    assert!(
+        !resp.process.command.is_empty(),
+        "command should not be empty for self (cmdline is always readable)"
+    );
+    println!("command = {}", resp.process.command);
+}
