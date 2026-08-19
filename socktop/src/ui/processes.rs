@@ -860,6 +860,7 @@ mod click_tests {
 
     fn metrics() -> Metrics {
         Metrics {
+            sampled_at_ms: None,
             cpu_total: 0.0,
             cpu_per_core: vec![],
             mem_total: 32_000_000_000,

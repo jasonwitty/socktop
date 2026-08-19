@@ -54,6 +54,10 @@ pub struct GpuInfo {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Metrics {
+    /// Epoch ms when the agent actually collected this snapshot (agents may
+    /// serve TTL-cached data). Absent on agents older than 1.51.
+    #[serde(default)]
+    pub sampled_at_ms: Option<u64>,
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,

@@ -74,6 +74,55 @@ pub struct AppState {
     pub cache_journal_entries: Arc<Mutex<HashMap<u32, CacheEntry<crate::types::JournalResponse>>>>,
 }
 
+/// TTL-gated value behind a std Mutex, for `static` caches on hot paths.
+/// Replaces the hand-rolled TempCache/GpuCache/refresh-timestamp statics
+/// that each reimplemented the same at/value pair.
+pub struct TtlCell<T> {
+    inner: std::sync::Mutex<CacheEntry<T>>,
+}
+
+impl<T: Clone> Default for TtlCell<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Clone> TtlCell<T> {
+    pub const fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(CacheEntry::new()),
+        }
+    }
+    /// The stored value, only while fresh. Poisoned lock reads as a miss.
+    pub fn get_fresh(&self, ttl: Duration) -> Option<T> {
+        let g = self.inner.lock().ok()?;
+        if g.is_fresh(ttl) {
+            g.value.clone()
+        } else {
+            None
+        }
+    }
+    pub fn set(&self, v: T) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.set(v);
+        }
+    }
+    /// True exactly once per TTL window: restamps and tells the caller to do
+    /// the refresh. Atomic check-and-stamp so concurrent callers don't both
+    /// refresh.
+    pub fn claim_stale(&self, ttl: Duration) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        if g.at.is_none_or(|t| t.elapsed() >= ttl) {
+            g.at = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CacheEntry<T> {
     pub at: Option<Instant>,
@@ -87,7 +136,7 @@ impl<T> Default for CacheEntry<T> {
 }
 
 impl<T> CacheEntry<T> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             at: None,
             value: None,

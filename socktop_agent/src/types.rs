@@ -30,6 +30,11 @@ pub struct ProcessInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {
+    /// Epoch ms when this snapshot was actually collected. The agent serves
+    /// TTL-cached snapshots, so the client needs the AGENT's sample time to
+    /// compute rates — measuring against client receive time turned cache
+    /// hits into a 0-then-2x sawtooth in the network graphs.
+    pub sampled_at_ms: u64,
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,
@@ -93,7 +98,8 @@ pub struct ProcessMetricsResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JournalEntry {
-    pub timestamp: String, // ISO 8601 formatted timestamp
+    pub timestamp: String, // RFC 3339 UTC, for display
+    pub timestamp_us: u64, // epoch microseconds, for sorting/formatting
     pub priority: LogLevel,
     pub message: String,
     pub unit: Option<String>, // systemd unit name

@@ -80,6 +80,8 @@ pub struct App {
 
     // Network totals snapshot + histories of KB/s
     last_net_totals: Option<(u64, u64, Instant)>,
+    // Agent-side sample timestamp of the previous snapshot (1.51+ agents).
+    last_net_sampled_at_ms: Option<u64>,
     rx_hist: VecDeque<u64>,
     tx_hist: VecDeque<u64>,
     rx_peak: u64,
@@ -180,6 +182,7 @@ impl App {
             cpu_hist_sum: 0,
             per_core_hist: PerCoreHistory::new(60),
             last_net_totals: None,
+            last_net_sampled_at_ms: None,
             rx_hist: VecDeque::with_capacity(600),
             tx_hist: VecDeque::with_capacity(600),
             rx_peak: 0,
@@ -1249,19 +1252,39 @@ impl App {
         self.per_core_hist.ensure_cores(m.cpu_per_core.len());
         self.per_core_hist.push_samples(&m.cpu_per_core);
 
-        // NET: sum across all ifaces, compute KB/s via elapsed time
+        // NET: sum across all ifaces, compute KB/s. Prefer the agent's sample
+        // timestamps (the agent serves TTL-cached snapshots, so client receive
+        // time overstates dt on a cache hit and produces a 0-then-2x sawtooth);
+        // fall back to the client clock against pre-1.51 agents.
         let now = Instant::now();
         let rx_total = m.networks.iter().map(|n| n.received).sum::<u64>();
         let tx_total = m.networks.iter().map(|n| n.transmitted).sum::<u64>();
         let (rx_kb, tx_kb) = if let Some((prx, ptx, pts)) = self.last_net_totals {
-            let dt = now.duration_since(pts).as_secs_f64().max(1e-6);
-            let rx = ((rx_total.saturating_sub(prx)) as f64 / dt / 1024.0).round() as u64;
-            let tx = ((tx_total.saturating_sub(ptx)) as f64 / dt / 1024.0).round() as u64;
-            (rx, tx)
+            // None = identical agent snapshot (cache hit): repeat the previous
+            // rates so the timeline advances without a fake dip to zero.
+            let dt = match (m.sampled_at_ms, self.last_net_sampled_at_ms) {
+                (Some(a), Some(b)) if a == b => None,
+                (Some(a), Some(b)) if a > b => Some((a - b) as f64 / 1000.0),
+                // Agent restarted or clock stepped backwards: client clock.
+                _ => Some(now.duration_since(pts).as_secs_f64().max(1e-6)),
+            };
+            match dt {
+                None => (
+                    self.rx_hist.back().copied().unwrap_or(0),
+                    self.tx_hist.back().copied().unwrap_or(0),
+                ),
+                Some(dt) => {
+                    let dt = dt.max(1e-6);
+                    let rx = ((rx_total.saturating_sub(prx)) as f64 / dt / 1024.0).round() as u64;
+                    let tx = ((tx_total.saturating_sub(ptx)) as f64 / dt / 1024.0).round() as u64;
+                    (rx, tx)
+                }
+            }
         } else {
             (0, 0)
         };
         self.last_net_totals = Some((rx_total, tx_total, now));
+        self.last_net_sampled_at_ms = m.sampled_at_ms;
         push_capped(&mut self.rx_hist, rx_kb, 600);
         push_capped(&mut self.tx_hist, tx_kb, 600);
         self.rx_peak = self.rx_peak.max(rx_kb);

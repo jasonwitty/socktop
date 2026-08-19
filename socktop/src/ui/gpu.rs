@@ -249,6 +249,7 @@ mod render_tests {
 
     fn metrics(gpus: Option<Vec<GpuInfo>>) -> Metrics {
         Metrics {
+            sampled_at_ms: None,
             cpu_total: 0.0,
             cpu_per_core: vec![],
             mem_total: 1024,

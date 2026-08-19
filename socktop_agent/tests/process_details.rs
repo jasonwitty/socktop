@@ -33,7 +33,7 @@ async fn test_collect_journal_entries_self() {
     // Test collecting journal entries for our own process
     let pid = process::id();
 
-    match collect_journal_entries(pid) {
+    match collect_journal_entries(pid).await {
         Ok(response) => {
             assert!(response.cached_at > 0);
             println!(
@@ -74,7 +74,7 @@ async fn test_collect_journal_entries_invalid_pid() {
     // Test with an invalid PID - journalctl might still return empty results
     let invalid_pid = 999999;
 
-    match collect_journal_entries(invalid_pid) {
+    match collect_journal_entries(invalid_pid).await {
         Ok(response) => {
             println!(
                 "✓ Journal query completed for invalid PID {} (empty result expected): {} entries",

@@ -10,11 +10,10 @@ homepage = "https://github.com/jasonwitty/socktop"
 repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
-# Tokio: Use minimal features instead of "full" to reduce binary size
-# Only include: rt-multi-thread (async runtime), net (WebSocket), sync (Mutex/RwLock), macros (#[tokio::test])
-# Excluded: io, fs, process, signal, time (not needed for this workload)
-# Savings: ~200-300KB binary size, faster compile times
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+# Tokio: minimal features instead of "full" to reduce binary size.
+# rt-multi-thread (runtime), net (WebSocket), sync (Mutex/oneshot),
+# macros (#[tokio::test]), process (async journalctl).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "process"] }
 axum = { version = "0.7", features = ["ws", "macros"] }
 sysinfo = { version = "0.37", features = ["network", "disk", "component"] }
 serde = { version = "1", features = ["derive"] }
