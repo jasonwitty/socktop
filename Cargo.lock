@@ -2422,7 +2422,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "socktop_connector 1.50.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "socktop_connector",
  "tempfile",
  "tokio",
  "unicode-width",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "socktop_connector"
-version = "1.50.0"
+version = "1.51.0"
 dependencies = [
  "flate2",
  "futures-util",
@@ -2481,27 +2481,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "socktop_connector"
-version = "1.50.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61ea6a5733e71da6d5c94d23265b85f7041305bca51e6c33e7104464444047bc"
-dependencies = [
- "flate2",
- "futures-util",
- "prost",
- "prost-build",
- "protoc-bin-vendored",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "url",
 ]
 
 [[package]]

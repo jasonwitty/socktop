@@ -11,7 +11,7 @@ repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
 # socktop connector for agent communication
-socktop_connector = "1.50.0"
+socktop_connector = { version = "1.51.0", path = "../socktop_connector" }
 
 tokio = { workspace = true }
 futures-util = { workspace = true }
