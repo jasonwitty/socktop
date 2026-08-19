@@ -475,9 +475,7 @@ dependencies = [
 
 [[package]]
 name = "socktop_connector"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a63dadaa5105df11b0684759a829012257d48e72a469cc554c0cf4394605f5a"
+version = "1.51.0"
 dependencies = [
  "flate2",
  "js-sys",

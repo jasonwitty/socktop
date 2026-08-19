@@ -416,6 +416,7 @@ Tip: If only the binary changed, restart is enough. If the unit file changed, ru
 
 ```json
 {
+  "sampled_at_ms": 1786752000123,
   "cpu_total": 12.4,
   "cpu_per_core": [11.2, 15.7],
   "mem_total": 33554432,

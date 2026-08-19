@@ -1,0 +1,11 @@
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/semver_parser-1f134cbb7f16a9ad.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range_set.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lexer.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/parser.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/version.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/generated.rs
+
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libsemver_parser-1f134cbb7f16a9ad.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range_set.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lexer.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/parser.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/version.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/generated.rs
+
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lib.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range_set.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/range.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/lexer.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/parser.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/version.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-parser-0.10.3/src/generated.rs:

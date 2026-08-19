@@ -1,0 +1,11 @@
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/async_task-f1e47f1b7fa3d9fe.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/header.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/raw.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/runnable.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/state.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/task.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/utils.rs
+
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libasync_task-f1e47f1b7fa3d9fe.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/header.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/raw.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/runnable.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/state.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/task.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/utils.rs
+
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/lib.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/header.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/raw.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/runnable.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/state.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/task.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1/src/utils.rs:

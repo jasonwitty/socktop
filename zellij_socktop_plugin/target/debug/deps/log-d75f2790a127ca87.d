@@ -1,0 +1,13 @@
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/log-d75f2790a127ca87.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/macros.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/serde.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/mod.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/error.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/key.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/source.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/value.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/__private_api.rs
+
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/liblog-d75f2790a127ca87.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/macros.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/serde.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/mod.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/error.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/key.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/source.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/value.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/__private_api.rs
+
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/lib.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/macros.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/serde.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/mod.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/error.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/key.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/source.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/kv/value.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.33/src/__private_api.rs:

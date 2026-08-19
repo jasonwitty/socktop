@@ -1,0 +1,10 @@
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/wezterm_bidi-566151686f8693d7.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_brackets.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_class.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/direction.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level_stack.rs
+
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libwezterm_bidi-566151686f8693d7.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_brackets.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_class.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/direction.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level_stack.rs
+
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/lib.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_brackets.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/bidi_class.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/direction.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-bidi-0.2.3/src/level_stack.rs:

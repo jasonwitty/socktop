@@ -1,0 +1,17 @@
+cargo:rustc-cfg=uds_sockaddr_un_len_108
+cargo:rustc-cfg=uds_ucred
+cargo:rustc-cfg=uds_scm_credentials
+cargo:rustc-cfg=uds_peercred
+cargo:rustc-cfg=uds_msghdr_iovlen_size_t
+cargo:rustc-cfg=uds_msghdr_controllen_size_t
+cargo:rustc-cfg=uds_linux_namespace
+cargo:rustc-cfg=uds_scm_rights
+cargo:rustc-cfg=uds_supported
+cargo:rustc-cfg=se_basic
+cargo:rustc-cfg=se_full_posix_1990
+cargo:rustc-cfg=se_base_posix_2001
+cargo:rustc-cfg=se_sigwinch
+cargo:rustc-cfg=se_sigpwr
+cargo:rustc-cfg=se_sigpoll
+cargo:rustc-cfg=unsafe_op_in_unsafe_fn_stable
+cargo:rustc-cfg=io_error_kind_unsupported_stable

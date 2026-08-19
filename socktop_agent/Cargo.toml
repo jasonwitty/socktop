@@ -1,6 +1,6 @@
 [package]
 name = "socktop_agent"
-version = "1.50.2"
+version = "1.51.0"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Socktop agent daemon. Serves host metrics over WebSocket."
 edition = "2024"

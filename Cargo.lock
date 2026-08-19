@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "socktop"
-version = "1.50.0"
+version = "1.51.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "socktop_agent"
-version = "1.50.2"
+version = "1.51.0"
 dependencies = [
  "anyhow",
  "assert_cmd",

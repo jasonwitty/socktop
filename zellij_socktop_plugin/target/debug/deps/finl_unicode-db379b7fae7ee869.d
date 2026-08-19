@@ -1,0 +1,10 @@
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/finl_unicode-db379b7fae7ee869.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/categories.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/grapheme_clusters.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/mod.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/characters.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/grapheme_property.rs
+
+/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libfinl_unicode-db379b7fae7ee869.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/categories.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/grapheme_clusters.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/mod.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/characters.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/grapheme_property.rs
+
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/lib.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/categories.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/grapheme_clusters.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/mod.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/characters.rs:
+/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/finl_unicode-1.4.0/src/data/grapheme_property.rs:
