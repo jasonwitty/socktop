@@ -26,6 +26,7 @@ sysinfo = "0.37"
 # CLI UI
 ratatui = "0.30"
 crossterm = "0.29"
+unicode-width = "0.2"
 
 # web server (remote-agent)
 axum = { version = "0.7", features = ["ws"] }

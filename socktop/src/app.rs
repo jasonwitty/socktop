@@ -36,7 +36,7 @@ use crate::ui::processes::{
 use crate::ui::{
     disks::draw_disks,
     gpu::{draw_gpu, draw_gpu_compact},
-    header::{build_header_intervals, build_header_title, draw_header},
+    header::{HeaderState, build_header, draw_header},
     mem::draw_mem,
     net::draw_net_spark,
     swap::draw_swap,
@@ -153,9 +153,8 @@ pub struct App {
     // Cached title strings — only rebuilt when source values change so the
     // diff renderer can suppress redraws on idle frames.
     header_title: String,
-    header_title_key: (String, bool, bool),
     header_intervals_text: String,
-    header_intervals_key: (u128, u128),
+    header_key: (String, bool, bool, u128, u128, u16),
     net_dl_title: String,
     net_dl_key: (u64, u64),
     net_ul_title: String,
@@ -236,9 +235,8 @@ impl App {
             has_token: false,
             force_compact: false,
             header_title: String::new(),
-            header_title_key: (String::new(), false, false),
             header_intervals_text: String::new(),
-            header_intervals_key: (u128::MAX, u128::MAX),
+            header_key: (String::new(), false, false, u128::MAX, u128::MAX, u16::MAX),
             net_dl_title: String::new(),
             net_dl_key: (u64::MAX, u64::MAX),
             net_ul_title: String::new(),
@@ -1278,27 +1276,30 @@ impl App {
         let l = self.layout(area);
 
         // Header — refresh cached strings only when their inputs change so the
-        // ratatui diff renderer can suppress repaints on idle frames.
+        // ratatui diff renderer can suppress repaints on idle frames. The wording now
+        // depends on the row width too, so that is part of the key.
         {
             let hostname = self.last_metrics.as_ref().map(|mm| mm.hostname.as_str());
+            let state = HeaderState {
+                hostname,
+                is_tls: self.is_tls,
+                has_token: self.has_token,
+                metrics_ms: self.metrics_interval.as_millis(),
+                procs_ms: self.procs_interval.as_millis(),
+            };
             let key = (
                 hostname.unwrap_or("").to_string(),
                 self.is_tls,
                 self.has_token,
+                state.metrics_ms,
+                state.procs_ms,
+                l.header.width,
             );
-            if self.header_title_key != key {
-                self.header_title = build_header_title(hostname, self.is_tls, self.has_token);
-                self.header_title_key = key;
-            }
-
-            let intervals_key = (
-                self.metrics_interval.as_millis(),
-                self.procs_interval.as_millis(),
-            );
-            if self.header_intervals_key != intervals_key {
-                self.header_intervals_text =
-                    build_header_intervals(intervals_key.0, intervals_key.1);
-                self.header_intervals_key = intervals_key;
+            if self.header_key != key {
+                let (title, intervals) = build_header(state, l.header.width);
+                self.header_title = title;
+                self.header_intervals_text = intervals;
+                self.header_key = key;
             }
         }
         draw_header(f, l.header, &self.header_title, &self.header_intervals_text);

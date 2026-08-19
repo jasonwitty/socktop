@@ -14,6 +14,10 @@ use ratatui::{
 
 use crate::history::PerCoreHistory;
 use crate::types::Metrics;
+use crate::ui::fit::{cols, pick_pair};
+
+/// Columns kept clear between the CPU title and the temperature readout.
+const TITLE_GAP: u16 = 2;
 
 /// State for dragging the scrollbar thumb
 #[derive(Clone, Copy, Debug, Default)]
@@ -248,29 +252,12 @@ pub fn draw_cpu_avg_graph(
         hist_sum as f64 / hist.len() as f64
     };
 
-    let title = if let Some(mm) = m {
-        format!("CPU (now: {:>5.1}% | avg: {:>5.1}%)", mm.cpu_total, avg_cpu)
-    } else {
-        "CPU avg".into()
-    };
-
-    // Build the top-right info (CPU temp and polling intervals)
-    let top_right_info = if let Some(mm) = m {
-        mm.cpu_temp_c
-            .map(|t| {
-                let icon = if t < 50.0 {
-                    "😎"
-                } else if t < 85.0 {
-                    "⚠️"
-                } else {
-                    "🔥"
-                };
-                format!("CPU Temp: {t:.1}°C {icon}")
-            })
-            .unwrap_or_else(|| "CPU Temp: N/A".into())
-    } else {
-        String::new()
-    };
+    let (title, top_right_info) = cpu_title_for_width(
+        m.map(|mm| mm.cpu_total),
+        avg_cpu,
+        m.and_then(|mm| mm.cpu_temp_c),
+        area.width,
+    );
 
     // Hand a slice directly to Sparkline. `make_contiguous` is amortized cheap
     // for our usage pattern (cap'd 600-element ring updated at 2 Hz) and lets
@@ -286,17 +273,80 @@ pub fn draw_cpu_avg_graph(
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(spark, area);
 
-    // Render the top-right info as text overlay in the top-right corner
+    // Temperature overlays the top border, right-aligned inside the corner. The title
+    // above is sized so the two cannot collide.
     if !top_right_info.is_empty() {
+        let w = cols(&top_right_info);
         let info_area = Rect {
-            x: area.x + area.width.saturating_sub(top_right_info.len() as u16 + 2),
+            x: area.x + area.width.saturating_sub(w + 1),
             y: area.y,
-            width: top_right_info.len() as u16 + 1,
+            width: w,
             height: 1,
         };
         let info_line = Line::from(Span::raw(top_right_info));
         f.render_widget(Paragraph::new(info_line), info_area);
     }
+}
+
+/// Health glyph for a CPU temperature.
+fn temp_icon(t: f32) -> &'static str {
+    if t < 50.0 {
+        "😎"
+    } else if t < 85.0 {
+        "⚠️"
+    } else {
+        "🔥"
+    }
+}
+
+/// Chooses the CPU pane's title and its right-aligned temperature readout for a pane
+/// `width` columns wide.
+///
+/// Both are painted onto the pane's top border, so without a shared budget the
+/// temperature simply overwrites the tail of the title on a narrow pane. Detail is given
+/// up in this order: the `CPU Temp:` label, then the `now:`/`avg:` labels, then the
+/// average reading, then the decimal on the temperature, and only last the temperature
+/// itself — the readings are what the pane is for, but a thermal warning is worth more
+/// than a second decimal place.
+fn cpu_title_for_width(
+    cpu_now: Option<f32>,
+    avg_cpu: f64,
+    temp_c: Option<f32>,
+    width: u16,
+) -> (String, String) {
+    let Some(now) = cpu_now else {
+        return ("CPU avg".into(), String::new());
+    };
+
+    // Two borders, plus a column of breathing room at each end of the title.
+    let budget = width.saturating_sub(4);
+
+    let labelled = format!("CPU (now: {now:>5.1}% | avg: {avg_cpu:>5.1}%)");
+    let bare = format!("CPU ({now:.1}% | {avg_cpu:.1}%)");
+    let now_only = format!("CPU ({now:.1}%)");
+
+    let (temp_labelled, temp_plain, temp_coarse) = match temp_c {
+        Some(t) => {
+            let icon = temp_icon(t);
+            (
+                format!("CPU Temp: {t:.1}°C {icon}"),
+                format!("{t:.1}°C {icon}"),
+                format!("{t:.0}°C {icon}"),
+            )
+        }
+        None => ("CPU Temp: N/A".into(), "N/A".into(), "N/A".into()),
+    };
+
+    let ladder = [
+        (labelled.as_str(), temp_labelled.as_str()),
+        (labelled.as_str(), temp_plain.as_str()),
+        (bare.as_str(), temp_plain.as_str()),
+        (bare.as_str(), temp_coarse.as_str()),
+        (now_only.as_str(), temp_coarse.as_str()),
+        (now_only.as_str(), ""),
+    ];
+    let (title, temp) = pick_pair(budget, TITLE_GAP, &ladder);
+    (title.to_string(), temp.to_string())
 }
 
 /// Draws the per-core CPU bars with sparklines and trends.
@@ -425,6 +475,108 @@ pub fn draw_per_core_bars(
             .end_style(Style::default().fg(SB_ARROW));
         let mut state = ScrollbarState::new(max_off).position(offset);
         f.render_stateful_widget(scrollbar, scroll_area, &mut state);
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    /// The defect this replaces: the temperature was painted over the title's tail on a
+    /// narrow pane. Whatever the width, the two must fit side by side on the border.
+    #[test]
+    fn title_and_temperature_never_overlap() {
+        for width in 0..=200u16 {
+            let (title, temp) = cpu_title_for_width(Some(3.4), 12.7, Some(43.0), width);
+            let budget = width.saturating_sub(4);
+            if temp.is_empty() {
+                continue;
+            }
+            assert!(
+                cols(&title) + cols(&temp) + TITLE_GAP <= budget,
+                "width {width}: {title:?} + {temp:?} do not fit in {budget} columns"
+            );
+        }
+    }
+
+    /// The current CPU reading is the one thing the pane must always show.
+    #[test]
+    fn the_current_reading_always_survives() {
+        for width in 20..=200u16 {
+            let (title, _) = cpu_title_for_width(Some(3.4), 12.7, Some(43.0), width);
+            assert!(
+                title.contains("3.4"),
+                "width {width}: lost the reading ({title:?})"
+            );
+        }
+    }
+
+    /// The ladder from the design: temp label, then now/avg labels, then the average,
+    /// then the temperature's decimal, then the temperature.
+    #[test]
+    fn detail_is_dropped_in_priority_order() {
+        let at = |w| cpu_title_for_width(Some(0.7), 1.3, Some(43.0), w);
+
+        let (title, temp) = at(80);
+        assert_eq!(title, "CPU (now:   0.7% | avg:   1.3%)");
+        assert_eq!(temp, "CPU Temp: 43.0°C 😎");
+
+        // The "CPU Temp:" label goes first; the readings keep their labels.
+        let (title, temp) = at(50);
+        assert_eq!(title, "CPU (now:   0.7% | avg:   1.3%)");
+        assert_eq!(temp, "43.0°C 😎");
+
+        // Then the now:/avg: labels.
+        let (title, temp) = at(40);
+        assert_eq!(title, "CPU (0.7% | 1.3%)");
+        assert_eq!(temp, "43.0°C 😎");
+
+        // Then the temperature's decimal.
+        let (title, temp) = at(31);
+        assert_eq!(title, "CPU (0.7% | 1.3%)");
+        assert_eq!(temp, "43°C 😎");
+
+        // Then the average reading.
+        let (title, temp) = at(26);
+        assert_eq!(title, "CPU (0.7%)");
+        assert_eq!(temp, "43°C 😎");
+
+        // Last of all, the temperature itself.
+        let (title, temp) = at(15);
+        assert_eq!(title, "CPU (0.7%)");
+        assert_eq!(temp, "");
+    }
+
+    /// A hot CPU has to stay visible as a warning, so the glyph rides along with the
+    /// reading at every tier that shows a temperature at all.
+    #[test]
+    fn the_thermal_glyph_tracks_the_temperature() {
+        for (t, icon) in [(43.0, "😎"), (70.0, "⚠️"), (92.0, "🔥")] {
+            for width in 26..=80u16 {
+                let (_, temp) = cpu_title_for_width(Some(0.7), 1.3, Some(t), width);
+                assert!(
+                    temp.contains(icon),
+                    "width {width} at {t}°C: expected {icon} in {temp:?}"
+                );
+            }
+        }
+    }
+
+    /// An agent that reports no temperature must not leave a stray label behind.
+    #[test]
+    fn a_missing_temperature_degrades_to_nothing() {
+        let (_, temp) = cpu_title_for_width(Some(0.7), 1.3, None, 80);
+        assert_eq!(temp, "CPU Temp: N/A");
+        let (_, temp) = cpu_title_for_width(Some(0.7), 1.3, None, 14);
+        assert_eq!(temp, "");
+    }
+
+    /// Before the first payload arrives there are no readings to show.
+    #[test]
+    fn no_metrics_yet_shows_the_placeholder() {
+        let (title, temp) = cpu_title_for_width(None, 0.0, None, 80);
+        assert_eq!(title, "CPU avg");
+        assert!(temp.is_empty());
     }
 }
 

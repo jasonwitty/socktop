@@ -134,14 +134,83 @@ pub fn rebuild_row_cache(metrics: &Metrics, out: &mut Vec<CachedRow>) -> f32 {
     peak
 }
 
-// Keep the original header widths here so drawing and hit-testing match.
-const COLS: [Constraint; 5] = [
-    Constraint::Length(8),      // PID
-    Constraint::Percentage(40), // Name
-    Constraint::Length(8),      // CPU %
-    Constraint::Length(12),     // Mem
-    Constraint::Length(8),      // Mem %
-];
+const PID_W: u16 = 8;
+const CPU_W: u16 = 8;
+const MEM_W: u16 = 12;
+const MEM_PCT_W: u16 = 8;
+/// Columns the Name field needs to identify anything. Every other column is only added
+/// once Name already has this much, so Name can no longer be squeezed to nothing.
+const NAME_MIN_W: u16 = 8;
+/// `Table::column_spacing`.
+const COL_SPACING: u16 = 1;
+
+/// Which process columns fit in the pane, and where they sit.
+///
+/// The table used to hand the layout solver a fixed, over-constrained set, so on a narrow
+/// pane the solver crushed the percentage-sized Name column to nothing while the fixed
+/// PID and Mem % columns kept their full width — losing the one field that identifies the
+/// process while keeping the ones that do not.
+///
+/// Columns are now added in priority order as the pane widens, so they are shed in
+/// reverse as it narrows: Name is unconditional, then CPU %, then Mem, then PID, and
+/// Mem % last (it is derivable from Mem, so it is the least costly to lose).
+///
+/// Both the draw path and the header-click hit-testing build this from the same width, so
+/// a sort click always lands on the column the user can actually see.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcColumns {
+    pub pid: bool,
+    pub cpu: bool,
+    pub mem: bool,
+    pub mem_pct: bool,
+}
+
+impl ProcColumns {
+    pub fn for_width(width: u16) -> Self {
+        // Each tier is the previous one plus a column and the gap before it.
+        let with_cpu = NAME_MIN_W + COL_SPACING + CPU_W;
+        let with_mem = with_cpu + COL_SPACING + MEM_W;
+        let with_pid = with_mem + COL_SPACING + PID_W;
+        let with_mem_pct = with_pid + COL_SPACING + MEM_PCT_W;
+        Self {
+            cpu: width >= with_cpu,
+            mem: width >= with_mem,
+            pid: width >= with_pid,
+            mem_pct: width >= with_mem_pct,
+        }
+    }
+
+    /// Column constraints in render order. Name takes whatever the others leave.
+    pub fn constraints(&self) -> Vec<Constraint> {
+        let mut c = Vec::with_capacity(5);
+        if self.pid {
+            c.push(Constraint::Length(PID_W));
+        }
+        c.push(Constraint::Fill(1)); // Name
+        if self.cpu {
+            c.push(Constraint::Length(CPU_W));
+        }
+        if self.mem {
+            c.push(Constraint::Length(MEM_W));
+        }
+        if self.mem_pct {
+            c.push(Constraint::Length(MEM_PCT_W));
+        }
+        c
+    }
+
+    /// Position of the CPU % column, which is clickable to sort. `None` when too narrow
+    /// to render it.
+    pub fn cpu_index(&self) -> Option<usize> {
+        self.cpu.then(|| 1 + usize::from(self.pid))
+    }
+
+    /// Position of the Mem column, which is clickable to sort.
+    pub fn mem_index(&self) -> Option<usize> {
+        self.mem
+            .then(|| 1 + usize::from(self.pid) + usize::from(self.cpu))
+    }
+}
 
 pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: ProcessDisplayParams) {
     // Draw outer block and title
@@ -233,6 +302,8 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
             .fold(0.0_f32, f32::max)
     };
 
+    let columns = ProcColumns::for_width(content.width);
+
     let rows_iter = idxs.iter().skip(offset).take(show_n).map(|&ix| {
         let p = &mm.top_processes[ix];
 
@@ -304,16 +375,29 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
                 .add_modifier(Modifier::BOLD);
         }
 
-        ratatui::widgets::Row::new(vec![
-            ratatui::widgets::Cell::from(pid_span).style(Style::default().fg(Color::DarkGray)),
-            ratatui::widgets::Cell::from(name_span),
-            ratatui::widgets::Cell::from(Span::raw(cpu_span_text))
-                .style(Style::default().fg(cpu_fg)),
-            ratatui::widgets::Cell::from(Span::raw(mem_span_text)),
-            ratatui::widgets::Cell::from(Span::raw(mem_pct_span_text))
-                .style(Style::default().fg(mem_fg)),
-        ])
-        .style(emphasis)
+        let mut cells = Vec::with_capacity(5);
+        if columns.pid {
+            cells.push(
+                ratatui::widgets::Cell::from(pid_span).style(Style::default().fg(Color::DarkGray)),
+            );
+        }
+        cells.push(ratatui::widgets::Cell::from(name_span));
+        if columns.cpu {
+            cells.push(
+                ratatui::widgets::Cell::from(Span::raw(cpu_span_text))
+                    .style(Style::default().fg(cpu_fg)),
+            );
+        }
+        if columns.mem {
+            cells.push(ratatui::widgets::Cell::from(Span::raw(mem_span_text)));
+        }
+        if columns.mem_pct {
+            cells.push(
+                ratatui::widgets::Cell::from(Span::raw(mem_pct_span_text))
+                    .style(Style::default().fg(mem_fg)),
+            );
+        }
+        ratatui::widgets::Row::new(cells).style(emphasis)
     });
 
     // Header with sort indicator
@@ -325,16 +409,30 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
         ProcSortBy::MemDesc => "Mem •",
         _ => "Mem",
     };
-    let header = ratatui::widgets::Row::new(vec!["PID", "Name", cpu_hdr, mem_hdr, "Mem %"]).style(
+    let mut header_cells = Vec::with_capacity(5);
+    if columns.pid {
+        header_cells.push("PID");
+    }
+    header_cells.push("Name");
+    if columns.cpu {
+        header_cells.push(cpu_hdr);
+    }
+    if columns.mem {
+        header_cells.push(mem_hdr);
+    }
+    if columns.mem_pct {
+        header_cells.push("Mem %");
+    }
+    let header = ratatui::widgets::Row::new(header_cells).style(
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     );
 
     // Render table inside content area (no borders here; outer block already drawn)
-    let table = Table::new(rows_iter, COLS.to_vec())
+    let table = Table::new(rows_iter, columns.constraints())
         .header(header)
-        .column_spacing(1);
+        .column_spacing(COL_SPACING);
     f.render_widget(table, content);
 
     // Draw tooltip if a process is selected
@@ -546,15 +644,24 @@ pub fn processes_handle_mouse(
         && mouse.column < header_area.x + header_area.width;
 
     if inside_header && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        // Split header into the same columns
+        // Split the header the same way the draw path did, so a click lands on the
+        // column actually on screen even when PID has been dropped.
+        let columns = ProcColumns::for_width(header_area.width);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(COLS.to_vec())
+            .constraints(columns.constraints())
+            .spacing(COL_SPACING) // must match Table::column_spacing in the draw path
             .split(header_area);
-        if mouse.column >= cols[2].x && mouse.column < cols[2].x + cols[2].width {
+        if let Some(cpu) = columns.cpu_index().map(|i| cols[i])
+            && mouse.column >= cpu.x
+            && mouse.column < cpu.x + cpu.width
+        {
             return Some(ProcSortBy::CpuDesc);
         }
-        if mouse.column >= cols[3].x && mouse.column < cols[3].x + cols[3].width {
+        if let Some(mem) = columns.mem_index().map(|i| cols[i])
+            && mouse.column >= mem.x
+            && mouse.column < mem.x + mem.width
+        {
             return Some(ProcSortBy::MemDesc);
         }
     }
@@ -646,15 +753,24 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
         && params.mouse.column < header_area.x + header_area.width;
 
     if inside_header && matches!(params.mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        // Split header into the same columns
+        // Split the header the same way the draw path did, so a click lands on the
+        // column actually on screen even when PID has been dropped.
+        let columns = ProcColumns::for_width(header_area.width);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(COLS.to_vec())
+            .constraints(columns.constraints())
+            .spacing(COL_SPACING) // must match Table::column_spacing in the draw path
             .split(header_area);
-        if params.mouse.column >= cols[2].x && params.mouse.column < cols[2].x + cols[2].width {
+        if let Some(cpu) = columns.cpu_index().map(|i| cols[i])
+            && params.mouse.column >= cpu.x
+            && params.mouse.column < cpu.x + cpu.width
+        {
             return Some(ProcSortBy::CpuDesc);
         }
-        if params.mouse.column >= cols[3].x && params.mouse.column < cols[3].x + cols[3].width {
+        if let Some(mem) = columns.mem_index().map(|i| cols[i])
+            && params.mouse.column >= mem.x
+            && params.mouse.column < mem.x + mem.width
+        {
             return Some(ProcSortBy::MemDesc);
         }
     }
@@ -690,4 +806,259 @@ pub fn processes_handle_mouse_with_selection(params: ProcessMouseParams) -> Opti
         (content.height.saturating_sub(1)) as usize,
     );
     None
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+    use ratatui::layout::{Direction, Layout, Rect};
+
+    fn name_width(w: u16) -> u16 {
+        let c = ProcColumns::for_width(w);
+        let rects = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(c.constraints())
+            .spacing(COL_SPACING)
+            .split(Rect::new(0, 0, w, 1));
+        rects[usize::from(c.pid)].width
+    }
+
+    /// The complaint this fixes: on a narrow pane the Name column was the first thing to
+    /// disappear, leaving a table of numbers with nothing to identify the process. Name
+    /// must now be the last column standing, at every width that can render anything.
+    #[test]
+    fn name_is_never_the_column_that_gets_dropped() {
+        for width in NAME_MIN_W..=200u16 {
+            assert!(
+                name_width(width) >= 1,
+                "width {width}: Name was squeezed to nothing"
+            );
+        }
+    }
+
+    /// Columns are shed in reverse priority order, so a narrower pane can never show a
+    /// column that a wider one hid.
+    #[test]
+    fn columns_are_shed_in_priority_order() {
+        for width in 0..=200u16 {
+            let c = ProcColumns::for_width(width);
+            assert!(!c.mem_pct || c.pid, "width {width}: Mem % outlived PID");
+            assert!(!c.pid || c.mem, "width {width}: PID outlived Mem");
+            assert!(!c.mem || c.cpu, "width {width}: Mem outlived CPU %");
+        }
+    }
+
+    /// Columns come back as the pane widens and never flap.
+    #[test]
+    fn columns_are_monotonic_in_width() {
+        let mut prev = ProcColumns::for_width(0);
+        for width in 1..=200u16 {
+            let c = ProcColumns::for_width(width);
+            for (was, now, name) in [
+                (prev.cpu, c.cpu, "CPU %"),
+                (prev.mem, c.mem, "Mem"),
+                (prev.pid, c.pid, "PID"),
+                (prev.mem_pct, c.mem_pct, "Mem %"),
+            ] {
+                assert!(!was || now, "width {width}: {name} vanished as it widened");
+            }
+            prev = c;
+        }
+    }
+
+    /// The tiers, from a comfortable pane down to a very narrow one.
+    #[test]
+    fn narrow_panes_shed_columns_in_order() {
+        let full = ProcColumns::for_width(48);
+        assert_eq!(full.constraints().len(), 5);
+        assert!(full.pid && full.cpu && full.mem && full.mem_pct);
+
+        // Mem % goes first.
+        let c = ProcColumns::for_width(45);
+        assert!(c.pid && c.mem && !c.mem_pct);
+
+        // Then PID.
+        let c = ProcColumns::for_width(35);
+        assert!(!c.pid && c.cpu && c.mem);
+
+        // Then Mem, leaving the name and its CPU load.
+        let c = ProcColumns::for_width(20);
+        assert!(!c.mem && c.cpu);
+        assert_eq!(c.constraints().len(), 2);
+
+        // At the floor, just the name.
+        let c = ProcColumns::for_width(10);
+        assert!(!c.cpu && !c.mem);
+        assert_eq!(c.constraints().len(), 1);
+    }
+
+    /// Regression guard for the old behaviour: a 130-column terminal gives the process
+    /// pane ~48 columns, and every column still fits there.
+    #[test]
+    fn a_wide_terminal_keeps_the_full_table() {
+        assert_eq!(ProcColumns::for_width(48).constraints().len(), 5);
+    }
+
+    /// Sort clicks are resolved by index, so those indices must track the columns that
+    /// are actually rendered — otherwise clicking "CPU %" would sort by Mem.
+    #[test]
+    fn sort_indices_follow_the_rendered_columns() {
+        let wide = ProcColumns::for_width(48);
+        assert_eq!(wide.cpu_index(), Some(2)); // PID, Name, CPU %
+        assert_eq!(wide.mem_index(), Some(3));
+
+        let narrow = ProcColumns::for_width(35);
+        assert_eq!(narrow.cpu_index(), Some(1)); // Name, CPU %
+        assert_eq!(narrow.mem_index(), Some(2));
+
+        // A column that is not rendered has no index to click.
+        let tiny = ProcColumns::for_width(10);
+        assert_eq!(tiny.cpu_index(), None);
+        assert_eq!(tiny.mem_index(), None);
+
+        // Whatever the width, any index returned is inside the rendered set.
+        for width in 0..=200u16 {
+            let c = ProcColumns::for_width(width);
+            let n = c.constraints().len();
+            for i in [c.cpu_index(), c.mem_index()].into_iter().flatten() {
+                assert!(i < n, "width {width}: index {i} outside {n} columns");
+            }
+        }
+    }
+
+    /// Name takes the slack, so it grows with the pane instead of being pinned to a
+    /// percentage that the fixed columns can crush.
+    #[test]
+    fn name_absorbs_the_leftover_width() {
+        assert!(
+            name_width(80) > name_width(60),
+            "Name did not grow with the pane"
+        );
+    }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use socktop_connector::{Metrics, ProcessInfo};
+
+    fn metrics() -> Metrics {
+        Metrics {
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 32_000_000_000,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![ProcessInfo {
+                pid: 4242,
+                name: "some-process".into(),
+                cpu_usage: 1.5,
+                mem_bytes: 1_000_000,
+            }],
+            gpus: None,
+            process_count: Some(1),
+        }
+    }
+
+    /// Renders the pane and returns its header row as text.
+    fn header_row(width: u16) -> String {
+        let m = metrics();
+        let mut cache = Vec::new();
+        let peak = rebuild_row_cache(&m, &mut cache);
+        let idxs = [0usize];
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|f| {
+                draw_top_processes(
+                    f,
+                    Rect::new(0, 0, width, 8),
+                    ProcessDisplayParams {
+                        metrics: Some(&m),
+                        scroll_offset: 0,
+                        sort_by: ProcSortBy::CpuDesc,
+                        selected_process_pid: None,
+                        selected_process_index: None,
+                        search_query: "",
+                        search_active: false,
+                        filtered_indices: &idxs,
+                        cached_rows: &cache,
+                        peak_cpu: peak,
+                    },
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buf[(x, 1)].symbol().to_string())
+            .collect()
+    }
+
+    fn click(width: u16, column: u16) -> Option<ProcSortBy> {
+        let mut scroll = 0usize;
+        let mut drag = None;
+        processes_handle_mouse(
+            &mut scroll,
+            &mut drag,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            Rect::new(0, 0, width, 8),
+            1,
+        )
+    }
+
+    /// The hit-test rects are computed by a separate `Layout` call from the one `Table`
+    /// renders with. This walks the rendered header text and clicks each label where it
+    /// actually appears, which catches any drift between the two — including column
+    /// spacing, which the two APIs configure differently.
+    #[test]
+    fn clicking_a_rendered_sort_header_sorts_by_that_column() {
+        for width in [40u16, 50, 60, 80, 120] {
+            let row = header_row(width);
+            let cpu_at = row.find("CPU").map(|i| row[..i].chars().count() as u16);
+            let mem_at = row.find("Mem").map(|i| row[..i].chars().count() as u16);
+
+            if let Some(x) = cpu_at {
+                assert_eq!(
+                    click(width, x),
+                    Some(ProcSortBy::CpuDesc),
+                    "width {width}: clicking the rendered 'CPU %' header at column {x} \
+                     did not sort by CPU (header row: {row:?})"
+                );
+            }
+            if let Some(x) = mem_at {
+                assert_eq!(
+                    click(width, x),
+                    Some(ProcSortBy::MemDesc),
+                    "width {width}: clicking the rendered 'Mem' header at column {x} \
+                     did not sort by Mem (header row: {row:?})"
+                );
+            }
+        }
+    }
+
+    /// Name is what identifies the row, so it must be rendered at every width the pane
+    /// can draw anything at.
+    #[test]
+    fn the_name_column_is_rendered_even_when_narrow() {
+        for width in [30u16, 40, 60, 120] {
+            let row = header_row(width);
+            assert!(
+                row.contains("Name"),
+                "width {width}: no Name column in header {row:?}"
+            );
+        }
+    }
 }
