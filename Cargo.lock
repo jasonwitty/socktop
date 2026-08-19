@@ -2423,7 +2423,6 @@ dependencies = [
  "serde",
  "serde_json",
  "socktop_connector 1.50.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "sysinfo",
  "tempfile",
  "tokio",
  "unicode-width",

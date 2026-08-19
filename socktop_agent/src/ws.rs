@@ -16,9 +16,7 @@ use crate::metrics::{collect_disks, collect_fast_metrics, collect_processes_all}
 use crate::proto::pb;
 use crate::state::AppState;
 
-// Compression threshold based on typical payload size
-// Temporarily increased for testing - revert to 768 for production
-//const COMPRESSION_THRESHOLD: usize = 50_000;
+// Payloads at or below this many bytes are sent as-is; larger ones are gzipped.
 const COMPRESSION_THRESHOLD: usize = 768;
 
 // Reusable buffer for compression to avoid allocations
