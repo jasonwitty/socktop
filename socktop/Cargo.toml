@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 url = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+unicode-width = { workspace = true }
 anyhow = { workspace = true }
 dirs-next = { workspace = true }
 sysinfo = { workspace = true }

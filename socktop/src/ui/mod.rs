@@ -2,6 +2,7 @@
 
 pub mod cpu;
 pub mod disks;
+pub mod fit;
 pub mod gpu;
 pub mod header;
 pub mod layout;
