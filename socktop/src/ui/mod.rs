@@ -4,6 +4,7 @@ pub mod cpu;
 pub mod disks;
 pub mod gpu;
 pub mod header;
+pub mod layout;
 pub mod mem;
 pub mod modal;
 pub mod modal_connection;

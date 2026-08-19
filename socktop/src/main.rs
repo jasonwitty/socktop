@@ -22,6 +22,7 @@ pub(crate) struct ParsedArgs {
     metrics_interval_ms: Option<u64>,
     processes_interval_ms: Option<u64>,
     verify_hostname: bool,
+    compact: bool,
 }
 
 pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
@@ -36,11 +37,12 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
     let mut metrics_interval_ms: Option<u64> = None;
     let mut processes_interval_ms: Option<u64> = None;
     let mut verify_hostname = false;
+    let mut compact = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 return Err(format!(
-                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"
+                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"
                 ));
             }
             "--tls-ca" | "-t" => {
@@ -60,6 +62,11 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
             }
             "--demo" => {
                 demo = true;
+            }
+            "--compact" => {
+                // Force the small-window layout at any terminal size. Without it the
+                // layout switches on its own once the window gets too short.
+                compact = true;
             }
             "--dry-run" => {
                 // intentionally undocumented
@@ -100,7 +107,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                     url = Some(arg);
                 } else {
                     return Err(format!(
-                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [ws://HOST:PORT/ws]"
+                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [ws://HOST:PORT/ws]"
                     ));
                 }
             }
@@ -116,6 +123,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
         metrics_interval_ms,
         processes_interval_ms,
         verify_hostname,
+        compact,
     })
 }
 
@@ -136,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
-        return run_demo_mode(parsed.tls_ca.as_deref()).await;
+        return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
     }
 
     let profiles_file = load_profiles();
@@ -241,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if (1..=names.len()).contains(&idx) {
                         let name = &names[idx - 1];
                         if name == "demo" {
-                            return run_demo_mode(parsed.tls_ca.as_deref()).await;
+                            return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
                         }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
                             (
@@ -301,7 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 eprintln!("If you don't have an agent running, you can try the demo mode.");
                 if prompt_yes_no("Would you like to start the demo mode now? [Y/n]: ") {
-                    return run_demo_mode(parsed.tls_ca.as_deref()).await;
+                    return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
                 } else {
                     eprintln!("Aborting. You can run 'socktop --help' for usage information.");
                     return Ok(());
@@ -315,7 +323,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let has_token = url.contains("token=");
     let mut app = App::new()
         .with_intervals(metrics_interval_ms, processes_interval_ms)
-        .with_status(is_tls, has_token);
+        .with_status(is_tls, has_token)
+        .with_compact(parsed.compact);
     if parsed.dry_run {
         return Ok(());
     }
@@ -379,7 +388,10 @@ fn gather_intervals(
 }
 
 // Demo mode implementation
-async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_demo_mode(
+    _tls_ca: Option<&str>,
+    compact: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let port = 3231;
     let url = format!("ws://127.0.0.1:{port}/ws");
     let child = match spawn_demo_agent(port) {
@@ -392,7 +404,7 @@ async fn run_demo_mode(_tls_ca: Option<&str>) -> Result<(), Box<dyn std::error::
         }
         Err(e) => return Err(e.into()),
     };
-    let mut app = App::new();
+    let mut app = App::new().with_compact(compact);
     // Demo mode connects to localhost, so disable hostname verification
     tokio::select! { res=app.run(&url,None,false)=>{ drop(child); res } _=tokio::signal::ctrl_c()=>{ drop(child); Ok(()) } }
 }

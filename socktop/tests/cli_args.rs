@@ -73,3 +73,36 @@ fn test_tlc_ca_arg_long_and_short_parsed() {
     );
     assert!(text3.contains("Usage:"));
 }
+
+#[test]
+fn test_compact_flag_documented_and_accepted() {
+    let exe = env!("CARGO_BIN_EXE_socktop");
+    let out = Command::new(exe)
+        .args(["--compact", "--help"])
+        .output()
+        .expect("run socktop --compact --help");
+    assert!(
+        out.status.success(),
+        "socktop --compact --help did not succeed"
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("--compact"),
+        "help text missing --compact\n{text}"
+    );
+
+    // The flag must not be mistaken for the positional URL argument.
+    let out2 = Command::new(exe)
+        .args(["--compact", "--dry-run", "ws://127.0.0.1:3000/ws"])
+        .output()
+        .expect("run socktop --compact --dry-run");
+    assert!(
+        out2.status.success(),
+        "socktop --compact with a URL was rejected: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}

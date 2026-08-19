@@ -31,6 +31,8 @@ socktop is a remote system monitor with a rich TUI, inspired by top/btop, talkin
   - Only top-level processes listed (threads hidden) — matches btop/top
 - Optional GPU metrics (can be disabled)
 - Optional auth token for the agent
+- Compact layout for small windows: automatically drops the panes that no longer fit so
+  the CPU graph and per-core bars stay visible (see [Compact mode](#compact-mode))
 
 ---
 
@@ -213,6 +215,8 @@ socktop --verify-hostname --tls-ca /path/to/cert.pem wss://HOST:8443/ws
 # shorthand:
 socktop -t /path/to/cert.pem wss://HOST:8443/ws
 # Note: providing --tls-ca/-t automatically upgrades ws:// to wss:// if you forget
+# force the small-window layout at any terminal size (normally automatic):
+socktop --compact ws://HOST:3000/ws
 ```
 
 Intervals (client-driven):
@@ -221,6 +225,29 @@ Intervals (client-driven):
 - Disks: ~5 s
 
 The agent stays idle unless queried. When queried, it collects just what’s needed.
+
+---
+
+## Compact mode
+
+In a short terminal the fixed layout runs out of rows and the CPU graph and per-core bars
+are the first things to collapse — exactly the panes you are most likely watching. Once
+the window is too short for the Disks pane to show even one disk, socktop switches to a
+compact layout:
+
+- **Disks is dropped.** It is the pane that degrades worst when partially drawn.
+- **Memory and Swap move side by side** into the row Disks vacated.
+- **GPU shrinks to a single line** — utilisation and VRAM only, no device name. On a host
+  with no GPU the pane disappears entirely.
+- **Everything reclaimed goes to the CPU graph and per-core bars**, which stay usable well
+  below the size where they used to vanish.
+
+The switch is automatic and needs no configuration. Pass `--compact` to pin the compact
+layout at any window size:
+
+```bash
+socktop --compact ws://HOST:3000/ws
+```
 
 ---
 

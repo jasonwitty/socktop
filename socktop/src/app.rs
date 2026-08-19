@@ -15,7 +15,7 @@ use ratatui::{
     //style::Color, // + add Color
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Rect},
+    layout::Rect,
 };
 use tokio::time::{sleep, timeout};
 
@@ -27,6 +27,7 @@ use crate::ui::cpu::{
     per_core_content_area, per_core_handle_key, per_core_handle_mouse,
     per_core_handle_scrollbar_mouse,
 };
+use crate::ui::layout::{AppLayout, compute as compute_layout};
 use crate::ui::modal::{ModalAction, ModalManager, ModalType};
 use crate::ui::processes::{
     ProcSortBy, ProcessKeyParams, processes_handle_key_with_selection,
@@ -34,7 +35,7 @@ use crate::ui::processes::{
 };
 use crate::ui::{
     disks::draw_disks,
-    gpu::draw_gpu,
+    gpu::{draw_gpu, draw_gpu_compact},
     header::{build_header_intervals, build_header_title, draw_header},
     mem::draw_mem,
     net::draw_net_spark,
@@ -145,6 +146,10 @@ pub struct App {
     pub is_tls: bool,
     pub has_token: bool,
 
+    // --compact: pin the compact layout regardless of window size. Without it the
+    // layout switches on its own once the window is too short for the Disks pane.
+    force_compact: bool,
+
     // Cached title strings — only rebuilt when source values change so the
     // diff renderer can suppress redraws on idle frames.
     header_title: String,
@@ -229,6 +234,7 @@ impl App {
             verify_hostname: false,
             is_tls: false,
             has_token: false,
+            force_compact: false,
             header_title: String::new(),
             header_title_key: (String::new(), false, false),
             header_intervals_text: String::new(),
@@ -245,6 +251,23 @@ impl App {
             last_auto_retry: None,
             replacement_connection: None,
         }
+    }
+
+    /// Pins the compact layout at any window size (`--compact`).
+    pub fn with_compact(mut self, force_compact: bool) -> Self {
+        self.force_compact = force_compact;
+        self
+    }
+
+    /// Pane rects for the current frame. The draw path and the mouse/key hit-testing
+    /// paths all go through here so they cannot disagree about where a pane is.
+    fn layout(&self, area: Rect) -> AppLayout {
+        let has_gpu = self
+            .last_metrics
+            .as_ref()
+            .and_then(|m| m.gpus.as_ref())
+            .is_some_and(|g| !g.is_empty());
+        compute_layout(area, self.force_compact, has_gpu)
     }
 
     pub fn with_intervals(mut self, metrics_ms: Option<u64>, procs_ms: Option<u64>) -> Self {
@@ -803,21 +826,8 @@ impl App {
                         // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
                         let sz = terminal.size()?;
                         let area = Rect::new(0, 0, sz.width, sz.height);
-                        let rows = ratatui::layout::Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(1),
-                                Constraint::Ratio(1, 3),
-                                Constraint::Length(3),
-                                Constraint::Length(3),
-                                Constraint::Min(10),
-                            ])
-                            .split(area);
-                        let top = ratatui::layout::Layout::default()
-                            .direction(Direction::Horizontal)
-                            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-                            .split(rows[1]);
-                        let content = per_core_content_area(top[1]);
+                        let layout = self.layout(area);
+                        let content = per_core_content_area(layout.per_core);
 
                         // Refresh the filtered+sorted index cache once before we
                         // borrow individual fields of `self`.
@@ -915,23 +925,10 @@ impl App {
                         // Layout to get areas
                         let sz = terminal.size()?;
                         let area = Rect::new(0, 0, sz.width, sz.height);
-                        let rows = ratatui::layout::Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Length(1),
-                                Constraint::Ratio(1, 3),
-                                Constraint::Length(3),
-                                Constraint::Length(3),
-                                Constraint::Min(10),
-                            ])
-                            .split(area);
-                        let top = ratatui::layout::Layout::default()
-                            .direction(Direction::Horizontal)
-                            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-                            .split(rows[1]);
+                        let layout = self.layout(area);
 
                         // Content wheel scrolling
-                        let content = per_core_content_area(top[1]);
+                        let content = per_core_content_area(layout.per_core);
                         per_core_handle_mouse(
                             &mut self.per_core_scroll,
                             m,
@@ -949,7 +946,7 @@ impl App {
                             &mut self.per_core_scroll,
                             &mut self.per_core_drag,
                             m,
-                            top[1],
+                            layout.per_core,
                             total_rows,
                         );
 
@@ -1278,18 +1275,7 @@ impl App {
 
     pub fn draw(&mut self, f: &mut ratatui::Frame<'_>) {
         let area = f.area();
-
-        // Root rows: header, top (cpu avg + per-core), memory, swap, bottom
-        let rows = ratatui::layout::Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),   // header
-                Constraint::Ratio(1, 3), // top row
-                Constraint::Length(3),   // memory (left) + GPU (right, part 1)
-                Constraint::Length(3),   // swap (left)   + GPU (right, part 2)
-                Constraint::Min(10),     // bottom: disks + net (left), top procs (right)
-            ])
-            .split(area);
+        let l = self.layout(area);
 
         // Header — refresh cached strings only when their inputs change so the
         // ratatui diff renderer can suppress repaints on idle frames.
@@ -1315,69 +1301,41 @@ impl App {
                 self.header_intervals_key = intervals_key;
             }
         }
-        draw_header(f, rows[0], &self.header_title, &self.header_intervals_text);
-
-        // Top row: left CPU avg, right Per-core (full top-right)
-        let top_lr = ratatui::layout::Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-            .split(rows[1]);
+        draw_header(f, l.header, &self.header_title, &self.header_intervals_text);
 
         draw_cpu_avg_graph(
             f,
-            top_lr[0],
+            l.cpu,
             &mut self.cpu_hist,
             self.cpu_hist_sum,
             self.last_metrics.as_ref(),
         );
         draw_per_core_bars(
             f,
-            top_lr[1],
+            l.per_core,
             self.last_metrics.as_ref(),
             &mut self.per_core_hist,
             self.per_core_scroll,
         );
 
-        // Memory + Swap rows split into left/right columns
-        let mem_lr = ratatui::layout::Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-            .split(rows[2]);
-        let swap_lr = ratatui::layout::Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-            .split(rows[3]);
+        // Memory + Swap: stacked vertically in the normal layout, side by side in the
+        // row Disks vacates in compact mode.
+        draw_mem(f, l.mem, self.last_metrics.as_ref());
+        draw_swap(f, l.swap, self.last_metrics.as_ref());
 
-        // Left: Memory + Swap
-        draw_mem(f, mem_lr[0], self.last_metrics.as_ref());
-        draw_swap(f, swap_lr[0], self.last_metrics.as_ref());
+        // GPU: a panel beside Memory/Swap normally, a single full-width line in compact
+        // mode, and absent entirely when the host reports no GPU while compact.
+        if let Some(gpu_area) = l.gpu {
+            if l.mode.is_compact() {
+                draw_gpu_compact(f, gpu_area, self.last_metrics.as_ref());
+            } else {
+                draw_gpu(f, gpu_area, self.last_metrics.as_ref());
+            }
+        }
 
-        // Right: GPU spans the same vertical space as Memory + Swap
-        let gpu_area = ratatui::layout::Rect {
-            x: mem_lr[1].x,
-            y: mem_lr[1].y,
-            width: mem_lr[1].width,
-            height: mem_lr[1].height + swap_lr[1].height,
-        };
-        draw_gpu(f, gpu_area, self.last_metrics.as_ref());
-
-        // Bottom area: left = Disks + Network, right = Top Processes
-        let bottom_lr = ratatui::layout::Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(rows[4]);
-
-        // Left bottom: Disks + Net stacked (make net panes slightly taller)
-        let left_stack = ratatui::layout::Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(4),    // Disks shrink slightly
-                Constraint::Length(5), // Download taller
-                Constraint::Length(5), // Upload taller
-            ])
-            .split(bottom_lr[0]);
-
-        draw_disks(f, left_stack[0], self.last_metrics.as_ref());
+        if let Some(disks_area) = l.disks {
+            draw_disks(f, disks_area, self.last_metrics.as_ref());
+        }
 
         // Net titles only change when the throughput or peak changes.
         let rx_now = self.rx_hist.back().copied().unwrap_or(0);
@@ -1388,7 +1346,7 @@ impl App {
         }
         draw_net_spark(
             f,
-            left_stack[1],
+            l.download,
             &self.net_dl_title,
             &mut self.rx_hist,
             ratatui::style::Color::Green,
@@ -1402,14 +1360,14 @@ impl App {
         }
         draw_net_spark(
             f,
-            left_stack[2],
+            l.upload,
             &self.net_ul_title,
             &mut self.tx_hist,
             ratatui::style::Color::Blue,
         );
 
         // Right bottom: Top Processes fills the column
-        let procs_area = bottom_lr[1];
+        let procs_area = l.procs;
         // Cache for input handlers
         self.last_procs_area = Some(procs_area);
         // Refresh the filter cache before partial borrows of self.
