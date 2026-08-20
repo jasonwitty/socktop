@@ -126,5 +126,9 @@ pub struct JournalResponse {
     pub entries: Vec<JournalEntry>,
     pub total_count: u32,
     pub truncated: bool,
+    /// journalctl's own explanation when the result is empty because of
+    /// journal ACCESS (not absence of logs) — e.g. a user-run agent asking
+    /// about a system service. None when entries exist or nothing to say.
+    pub notice: Option<String>,
     pub cached_at: u64, // Unix timestamp when this data was cached
 }

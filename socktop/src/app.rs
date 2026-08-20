@@ -92,7 +92,7 @@ pub struct App {
 
     // Network totals snapshot + histories of KB/s
     last_net_totals: Option<(u64, u64, Instant)>,
-    // Agent-side sample timestamp of the previous snapshot (1.51+ agents).
+    // Agent-side sample timestamp of the previous snapshot (1.60+ agents).
     last_net_sampled_at_ms: Option<u64>,
 
     // Consecutive metrics-request timeouts. One timeout gets a silent stream
@@ -1428,7 +1428,7 @@ impl App {
         // NET: sum across all ifaces, compute KB/s. Prefer the agent's sample
         // timestamps (the agent serves TTL-cached snapshots, so client receive
         // time overstates dt on a cache hit and produces a 0-then-2x sawtooth);
-        // fall back to the client clock against pre-1.51 agents.
+        // fall back to the client clock against pre-1.60 agents.
         let now = Instant::now();
         let rx_total = m.networks.iter().map(|n| n.received).sum::<u64>();
         let tx_total = m.networks.iter().map(|n| n.transmitted).sum::<u64>();

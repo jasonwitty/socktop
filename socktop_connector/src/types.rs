@@ -55,7 +55,7 @@ pub struct GpuInfo {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Metrics {
     /// Epoch ms when the agent actually collected this snapshot (agents may
-    /// serve TTL-cached data). Absent on agents older than 1.51.
+    /// serve TTL-cached data). Absent on agents older than 1.60.
     #[serde(default)]
     pub sampled_at_ms: Option<u64>,
     pub cpu_total: f32,
@@ -151,6 +151,10 @@ pub struct JournalResponse {
     pub entries: Vec<JournalEntry>,
     pub total_count: u32,
     pub truncated: bool,
+    /// Agent-side explanation for an empty result (journal access limits).
+    /// Absent on agents older than 1.60.
+    #[serde(default)]
+    pub notice: Option<String>,
     pub cached_at: u64, // Unix timestamp when this data was cached
 }
 

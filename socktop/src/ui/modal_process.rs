@@ -472,13 +472,28 @@ impl ModalManager {
             .borders(Borders::ALL);
 
         let content_lines: Vec<Line> = if journal.entries.is_empty() {
-            vec![
+            let mut lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
                     "No journal entries found for this process",
                     Style::default().add_modifier(Modifier::DIM),
                 )),
-            ]
+            ];
+            // Access limits, not absence of logs: show journalctl's own hint
+            // (typical when the agent runs as an unprivileged user, e.g. demo
+            // mode) plus the practical fix.
+            if let Some(notice) = &journal.notice {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("⚠ {notice}"),
+                    Style::default().fg(Color::Yellow),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Run the agent as a service (or a user in the systemd-journal group) for full journal access.",
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
+            }
+            lines
         } else {
             journal
                 .entries

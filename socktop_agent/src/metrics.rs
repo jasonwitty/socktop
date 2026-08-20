@@ -1412,6 +1412,25 @@ pub async fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String
     // Sort by timestamp (newest first)
     entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp_us));
 
+    // journalctl exits 0 with no output when the invoking user simply cannot
+    // SEE the process's entries (e.g. a user-run agent asking about a system
+    // service) — but it explains itself on stderr ("You are currently not
+    // seeing messages from other users and the system…"). Pass that hint
+    // along so the client can distinguish "no logs" from "no access".
+    let notice = if entries.is_empty() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let hint: String = err
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if hint.is_empty() { None } else { Some(hint) }
+    } else {
+        None
+    };
+
     let response_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("Time error: {e}"))?
@@ -1424,6 +1443,7 @@ pub async fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String
         entries,
         total_count,
         truncated,
+        notice,
         cached_at: response_timestamp,
     })
 }
