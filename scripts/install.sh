@@ -120,21 +120,85 @@ update_path_copies socktop "$CLIENT"
 update_path_copies socktop_agent "$AGENT"
 
 # ---------- systemd service (Linux only) ----------
-if [ "$OS" = "Linux" ] && [ "$NO_SERVICE" -eq 0 ] \
-   && command -v systemctl >/dev/null \
-   && systemctl list-unit-files 2>/dev/null | grep -q '^socktop-agent\.service'; then
-  # The deb package's unit points at its own binary path; replace it in place
-  # so the running service picks up this build.
-  UNIT_BIN="$(systemctl show -p ExecStart socktop-agent.service 2>/dev/null \
-              | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)"
-  if [ -n "$UNIT_BIN" ] && [ "$UNIT_BIN" != "$PREFIX/socktop_agent" ]; then
-    say "Refreshing systemd service binary at $UNIT_BIN"
-    $SUDO systemctl stop socktop-agent.service
-    $SUDO install -m 755 "$AGENT" "$UNIT_BIN"
-    $SUDO systemctl start socktop-agent.service
+# System-level operations (unit files, users, service control) need root no
+# matter where the binaries were installed — decide independently of PREFIX.
+SYS_SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null; then SYS_SUDO="sudo"; else SYS_SUDO="__none__"; fi
+fi
+if [ "$SYS_SUDO" = "__none__" ] && [ "$NO_SERVICE" -eq 0 ]; then
+  warn "no sudo available — skipping systemd service management"
+  NO_SERVICE=1
+fi
+if [ "$OS" = "Linux" ] && [ "$NO_SERVICE" -eq 0 ] && command -v systemctl >/dev/null; then
+  if systemctl list-unit-files 2>/dev/null | grep -q '^socktop-agent\.service'; then
+    # UPGRADE: the unit file is the operator's (SSL, tokens, ports may be
+    # configured there) — never overwrite it. Only the binary it points at
+    # is replaced, then the service is restarted.
+    say "Existing socktop-agent.service found — preserving unit file, refreshing binary"
+    UNIT_BIN="$(systemctl show -p ExecStart socktop-agent.service 2>/dev/null \
+                | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)"
+    if [ -n "$UNIT_BIN" ] && [ "$UNIT_BIN" != "$PREFIX/socktop_agent" ]; then
+      $SYS_SUDO systemctl stop socktop-agent.service
+      $SYS_SUDO install -m 755 "$AGENT" "$UNIT_BIN"
+      $SYS_SUDO systemctl start socktop-agent.service
+    else
+      $SYS_SUDO systemctl restart socktop-agent.service
+    fi
   else
-    say "Restarting socktop-agent.service"
-    $SUDO systemctl restart socktop-agent.service
+    # FRESH INSTALL: unit + the system user it runs as + its state dir,
+    # then enable and start. Mirrors the deb package's postinst and
+    # https://www.socktop.io/assets/docs/installation/agent-service.html
+    say "No socktop-agent.service found — installing and enabling it"
+
+    if ! getent group socktop >/dev/null; then
+      $SYS_SUDO groupadd --system socktop
+    fi
+    if ! getent passwd socktop >/dev/null; then
+      NOLOGIN="$(command -v nologin || echo /usr/sbin/nologin)"
+      $SYS_SUDO useradd --system -g socktop -d /var/lib/socktop -M -s "$NOLOGIN" socktop
+    fi
+    $SYS_SUDO mkdir -p /var/lib/socktop
+    $SYS_SUDO chown socktop:socktop /var/lib/socktop
+    $SYS_SUDO chmod 755 /var/lib/socktop
+
+    UNIT_TMP="$(mktemp)"
+    if [ -f "$SRC_DIR/docs/socktop-agent.service" ]; then
+      cp "$SRC_DIR/docs/socktop-agent.service" "$UNIT_TMP"
+    else
+      # Fallback for refs that predate docs/socktop-agent.service
+      cat > "$UNIT_TMP" <<'UNIT'
+[Unit]
+Description=Socktop agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/socktop_agent --port 3000
+Environment=RUST_LOG=info
+# Optional auth:
+# Environment=SOCKTOP_TOKEN=changeme
+# TLS (self-signed cert on first run, default port 8443):
+# Environment=SOCKTOP_ENABLE_SSL=1
+Restart=on-failure
+User=socktop
+Group=socktop
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    fi
+    # Point ExecStart at wherever this run installed the agent.
+    sed -i.bak "s|^ExecStart=[^ ]*socktop_agent|ExecStart=$PREFIX/socktop_agent|" "$UNIT_TMP"
+    rm -f "$UNIT_TMP.bak"
+
+    $SYS_SUDO install -o root -g root -m 0644 "$UNIT_TMP" /etc/systemd/system/socktop-agent.service
+    rm -f "$UNIT_TMP"
+    $SYS_SUDO systemctl daemon-reload
+    $SYS_SUDO systemctl enable --now socktop-agent.service
+    say "Service installed. To enable TLS or a token, edit /etc/systemd/system/socktop-agent.service, then: sudo systemctl daemon-reload && sudo systemctl restart socktop-agent"
   fi
   sleep 1
   systemctl --no-pager -l status socktop-agent.service | head -5 || true
