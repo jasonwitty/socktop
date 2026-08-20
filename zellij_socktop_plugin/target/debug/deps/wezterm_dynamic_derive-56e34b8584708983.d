@@ -1,9 +1,0 @@
-/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/wezterm_dynamic_derive-56e34b8584708983.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/attr.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/bound.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/fromdynamic.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/todynamic.rs
-
-/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libwezterm_dynamic_derive-56e34b8584708983.so: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/lib.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/attr.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/bound.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/fromdynamic.rs /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/todynamic.rs
-
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/lib.rs:
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/attr.rs:
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/bound.rs:
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/fromdynamic.rs:
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wezterm-dynamic-derive-0.1.1/src/todynamic.rs:

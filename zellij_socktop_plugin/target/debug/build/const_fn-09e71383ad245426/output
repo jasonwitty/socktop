@@ -1,4 +1,0 @@
-cargo:rerun-if-changed=build.rs
-cargo:rustc-check-cfg=cfg(const_fn_assume_incomplete_release,const_fn_has_build_script)
-cargo:rustc-check-cfg=cfg(host_os,values("windows"))
-cargo:rustc-cfg=const_fn_has_build_script

@@ -1,5 +1,0 @@
-/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/aes-7489e98965cdae79.d: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aes-0.6.0/src/lib.rs
-
-/home/jasonw/Documents/GitHub/socktop/zellij_socktop_plugin/target/debug/deps/libaes-7489e98965cdae79.rmeta: /home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aes-0.6.0/src/lib.rs
-
-/home/jasonw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aes-0.6.0/src/lib.rs:

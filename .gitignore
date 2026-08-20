@@ -1,6 +1,7 @@
-/target
+# Any crate's build directory, including standalone sub-crates
+# (zellij_socktop_plugin, socktop_wasm_test) that live outside the workspace.
+target/
 .vscode/
-/socktop-wasm-test/target
 /.cargo/
 
 # Documentation files from development sessions (context-specific, not for public repo)

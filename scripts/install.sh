@@ -96,6 +96,29 @@ say "Installing to $PREFIX"
 $SUDO install -m 755 "$CLIENT" "$PREFIX/socktop"
 $SUDO install -m 755 "$AGENT" "$PREFIX/socktop_agent"
 
+# Update every other copy on PATH as well. A stale `cargo install` in
+# ~/.cargo/bin would otherwise SHADOW the fresh binary (~/.cargo/bin
+# usually precedes /usr/local/bin on PATH), leaving `socktop --version`
+# stuck on the old release after a "successful" install.
+update_path_copies() {
+  local name="$1" src="$2" copy dir
+  # type -ap lists every match on PATH (bash builtin, symlinks not resolved)
+  for copy in $(type -ap "$name" | sort -u); do
+    [ "$copy" = "$PREFIX/$name" ] && continue
+    dir="$(dirname "$copy")"
+    say "Updating additional copy on PATH: $copy"
+    if [ -w "$copy" ] || [ -w "$dir" ]; then
+      install -m 755 "$src" "$copy"
+    else
+      # Non-fatal: an un-updatable extra copy shouldn't kill the install,
+      # but the user must know it may shadow the fresh binary.
+      $SUDO install -m 755 "$src" "$copy"         || warn "could not update $copy — it may shadow $PREFIX/$name"
+    fi
+  done
+}
+update_path_copies socktop "$CLIENT"
+update_path_copies socktop_agent "$AGENT"
+
 # ---------- systemd service (Linux only) ----------
 if [ "$OS" = "Linux" ] && [ "$NO_SERVICE" -eq 0 ] \
    && command -v systemctl >/dev/null \
@@ -120,3 +143,5 @@ fi
 say "Installed:"
 "$PREFIX/socktop" --version
 "$PREFIX/socktop_agent" --version
+say "Active on PATH: $(type -p socktop || true) / $(type -p socktop_agent || true)"
+socktop --version
