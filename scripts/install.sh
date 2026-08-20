@@ -190,15 +190,34 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 UNIT
     fi
-    # Point ExecStart at wherever this run installed the agent.
-    sed -i.bak "s|^ExecStart=[^ ]*socktop_agent|ExecStart=$PREFIX/socktop_agent|" "$UNIT_TMP"
+    # Pick the agent port: 3000 by default, but NEVER bind onto a port that
+    # something else already holds (e.g. Gitea/Umami and friends love 3000)
+    # — that puts the fresh service straight into a crash-restart loop.
+    AGENT_PORT=""
+    for p in 3000 3001 3010 3231 3232; do
+      if ! ss -tln 2>/dev/null | awk '{print $4}' | grep -q ":${p}\$"; then
+        AGENT_PORT="$p"
+        break
+      fi
+    done
+    if [ -z "$AGENT_PORT" ]; then
+      AGENT_PORT=3000
+      warn "no free port among the defaults — using 3000; edit the unit if the service fails to start"
+    elif [ "$AGENT_PORT" != "3000" ]; then
+      warn "port 3000 is already in use by another service — configuring the agent on port $AGENT_PORT"
+    fi
+
+    # Point ExecStart at wherever this run installed the agent, on the chosen port.
+    sed -i.bak -e "s|^ExecStart=[^ ]*socktop_agent|ExecStart=$PREFIX/socktop_agent|" \
+               -e "s|--port [0-9]*|--port $AGENT_PORT|" "$UNIT_TMP"
     rm -f "$UNIT_TMP.bak"
 
     $SYS_SUDO install -o root -g root -m 0644 "$UNIT_TMP" /etc/systemd/system/socktop-agent.service
     rm -f "$UNIT_TMP"
     $SYS_SUDO systemctl daemon-reload
     $SYS_SUDO systemctl enable --now socktop-agent.service
-    say "Service installed. To enable TLS or a token, edit /etc/systemd/system/socktop-agent.service, then: sudo systemctl daemon-reload && sudo systemctl restart socktop-agent"
+    say "Service installed — agent URL: ws://$(hostname):$AGENT_PORT/ws"
+    say "To enable TLS or a token, edit /etc/systemd/system/socktop-agent.service, then: sudo systemctl daemon-reload && sudo systemctl restart socktop-agent"
   fi
   sleep 1
   systemctl --no-pager -l status socktop-agent.service | head -5 || true
