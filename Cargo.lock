@@ -2441,6 +2441,7 @@ dependencies = [
  "futures-util",
  "gfxinfo",
  "hostname",
+ "nvml-wrapper",
  "once_cell",
  "prost",
  "prost-build",

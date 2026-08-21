@@ -51,30 +51,68 @@ mod worker {
         tx
     }
 
+    enum Handle {
+        /// gfxinfo's own detection (AMD sysfs, NVIDIA via unversioned NVML).
+        Gfx(Box<dyn gfxinfo::Gpu>),
+        /// Direct NVML with an explicit versioned soname. Debian & friends
+        /// ship only libnvidia-ml.so.1 (the unversioned symlink lives in the
+        /// dev package), so gfxinfo's default dlopen fails there even though
+        /// the driver is fully functional.
+        Nvml(nvml_wrapper::Nvml),
+    }
+
+    fn probe() -> Option<Handle> {
+        if let Ok(g) = gfxinfo::active_gpu() {
+            return Some(Handle::Gfx(g));
+        }
+        nvml_wrapper::Nvml::builder()
+            .lib_path(std::ffi::OsStr::new("libnvidia-ml.so.1"))
+            .init()
+            .ok()
+            .map(Handle::Nvml)
+    }
+
+    fn collect_from(handle: &Handle) -> Option<Vec<GpuMetrics>> {
+        match handle {
+            Handle::Gfx(gpu) => {
+                let info = gpu.info();
+                Some(vec![GpuMetrics {
+                    name: gpu.model().to_string(),
+                    utilization_gpu_pct: info.load_pct().clamp(0, 100),
+                    mem_used_bytes: info.used_vram(),
+                    mem_total_bytes: info.total_vram(),
+                }])
+            }
+            Handle::Nvml(nvml) => {
+                let device = nvml.device_by_index(0).ok()?;
+                let mem = device.memory_info().ok()?;
+                Some(vec![GpuMetrics {
+                    name: device.name().unwrap_or_else(|_| "NVIDIA GPU".into()),
+                    utilization_gpu_pct: device
+                        .utilization_rates()
+                        .map(|u| u.gpu.clamp(0, 100))
+                        .unwrap_or(0),
+                    mem_used_bytes: mem.used,
+                    mem_total_bytes: mem.total,
+                }])
+            }
+        }
+    }
+
     fn run(rx: mpsc::Receiver<Reply>) {
-        let mut handle: Option<Box<dyn gfxinfo::Gpu>> = None;
+        let mut handle: Option<Handle> = None;
         // Probing failed: remember and answer None without re-initing the GPU
         // stack per request. The agent's negative cache stops asking anyway.
         let mut probe_failed = false;
         while let Ok(reply) = rx.recv() {
             if handle.is_none() && !probe_failed {
-                match gfxinfo::active_gpu() {
-                    Ok(g) => handle = Some(g),
-                    Err(_) => probe_failed = true,
-                }
+                handle = probe();
+                probe_failed = handle.is_none();
             }
-            let out = handle.as_ref().map(|gpu| {
-                let info = gpu.info();
-                vec![GpuMetrics {
-                    name: gpu.model().to_string(),
-                    utilization_gpu_pct: info.load_pct().clamp(0, 100),
-                    mem_used_bytes: info.used_vram(),
-                    mem_total_bytes: info.total_vram(),
-                }]
-            });
-            // A live GPU cannot report 0 total VRAM; gfxinfo returns zeros
-            // when the underlying session died (e.g. driver reload). Drop the
-            // handle so the next request re-probes.
+            let out = handle.as_ref().and_then(collect_from);
+            // A live GPU cannot report 0 total VRAM; zeros mean the session
+            // died (e.g. driver reload). Drop the handle so the next request
+            // re-probes.
             if let Some(v) = &out
                 && !v.is_empty()
                 && v.iter().all(|g| g.mem_total_bytes == 0)
