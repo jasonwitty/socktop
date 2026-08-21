@@ -7,7 +7,7 @@
 #
 #   ./scripts/install.sh                     # build HEAD of the repo you're in
 #   ./scripts/install.sh --ref v1.60.0       # build a tag/branch (clones if needed)
-#   ./scripts/install.sh --ref housekeeping-p2
+#   ./scripts/install.sh --ref master           # or any branch
 #   ./scripts/install.sh --prefix ~/.local/bin --no-service
 #
 set -euo pipefail
