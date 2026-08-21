@@ -416,6 +416,7 @@ Tip: If only the binary changed, restart is enough. If the unit file changed, ru
 
 ```json
 {
+  "sampled_at_ms": 1786752000123,
   "cpu_total": 12.4,
   "cpu_per_core": [11.2, 15.7],
   "mem_total": 33554432,
@@ -475,7 +476,7 @@ socktop --tls-ca /path/to/agent/cert.pem wss://HOST:8443/ws
 Notes:
 - Do not copy the private key off the server; only the cert.pem is needed by clients.
 - When --tls-ca/-t is supplied, the client auto‑upgrades ws:// to wss:// to avoid protocol mismatch.
-- Hostname (SAN) verification is DISABLED by default (the cert is still pinned). Use `--verify-hostname` to enable strict SAN checking.
+- Hostname (SAN) verification is DISABLED by default; instead the client PINS the certificate: the agent must present a cert byte-identical to one in your `--tls-ca` file (expiry is ignored in this mode — you pinned that exact cert). Use `--verify-hostname` to switch to strict chain + SAN validation instead.
 - You can run multiple clients with different cert paths by passing --tls-ca per invocation.
 
 ---

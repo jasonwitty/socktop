@@ -499,7 +499,6 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
     }
 }
 
-/// Handle keyboard scrolling (Up/Down/PageUp/PageDown/Home/End)
 /// Parameters for process key event handling
 pub struct ProcessKeyParams<'a> {
     pub selected_process_pid: &'a mut Option<u32>,
@@ -507,16 +506,6 @@ pub struct ProcessKeyParams<'a> {
     pub key: crossterm::event::KeyEvent,
     pub metrics: Option<&'a Metrics>,
     pub filtered_indices: &'a [usize],
-}
-
-/// LEGACY: Use processes_handle_key_with_selection for enhanced functionality
-#[allow(dead_code)]
-pub fn processes_handle_key(
-    scroll_offset: &mut usize,
-    key: crossterm::event::KeyEvent,
-    page_size: usize,
-) {
-    crate::ui::cpu::per_core_handle_key(scroll_offset, key, page_size);
 }
 
 pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
@@ -596,83 +585,6 @@ pub fn processes_handle_key_with_selection(params: ProcessKeyParams) -> bool {
             false
         }
     }
-}
-
-/// Handle mouse for content scrolling and scrollbar dragging.
-/// Returns Some(new_sort) if the header "CPU %" or "Mem" was clicked.
-/// LEGACY: Use processes_handle_mouse_with_selection for enhanced functionality
-#[allow(dead_code)]
-pub fn processes_handle_mouse(
-    scroll_offset: &mut usize,
-    drag: &mut Option<crate::ui::cpu::PerCoreScrollDrag>,
-    mouse: MouseEvent,
-    area: Rect,
-    total_rows: usize,
-) -> Option<ProcSortBy> {
-    // Inner and content areas (match draw_top_processes)
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-    if inner.height == 0 || inner.width <= 2 {
-        return None;
-    }
-    let content = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width.saturating_sub(2),
-        height: inner.height,
-    };
-
-    // Scrollbar interactions (click arrows/page/drag)
-    per_core_handle_scrollbar_mouse(scroll_offset, drag, mouse, area, total_rows);
-
-    // Wheel scrolling when inside the content
-    crate::ui::cpu::per_core_handle_mouse(scroll_offset, mouse, content, content.height as usize);
-
-    // Header click to change sort
-    let header_area = Rect {
-        x: content.x,
-        y: content.y,
-        width: content.width,
-        height: 1,
-    };
-    let inside_header = mouse.row == header_area.y
-        && mouse.column >= header_area.x
-        && mouse.column < header_area.x + header_area.width;
-
-    if inside_header && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        // Split the header the same way the draw path did, so a click lands on the
-        // column actually on screen even when PID has been dropped.
-        let columns = ProcColumns::for_width(header_area.width);
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(columns.constraints())
-            .spacing(COL_SPACING) // must match Table::column_spacing in the draw path
-            .split(header_area);
-        if let Some(cpu) = columns.cpu_index().map(|i| cols[i])
-            && mouse.column >= cpu.x
-            && mouse.column < cpu.x + cpu.width
-        {
-            return Some(ProcSortBy::CpuDesc);
-        }
-        if let Some(mem) = columns.mem_index().map(|i| cols[i])
-            && mouse.column >= mem.x
-            && mouse.column < mem.x + mem.width
-        {
-            return Some(ProcSortBy::MemDesc);
-        }
-    }
-
-    // Clamp to valid range
-    per_core_clamp(
-        scroll_offset,
-        total_rows,
-        (content.height.saturating_sub(1)) as usize,
-    );
-    None
 }
 
 /// Parameters for process mouse event handling
@@ -948,6 +860,7 @@ mod click_tests {
 
     fn metrics() -> Metrics {
         Metrics {
+            sampled_at_ms: None,
             cpu_total: 0.0,
             cpu_per_core: vec![],
             mem_total: 32_000_000_000,
@@ -1003,20 +916,29 @@ mod click_tests {
     }
 
     fn click(width: u16, column: u16) -> Option<ProcSortBy> {
+        let m = metrics();
         let mut scroll = 0usize;
         let mut drag = None;
-        processes_handle_mouse(
-            &mut scroll,
-            &mut drag,
-            MouseEvent {
+        let mut sel_pid = None;
+        let mut sel_idx = None;
+        let idxs = [0usize];
+        processes_handle_mouse_with_selection(ProcessMouseParams {
+            scroll_offset: &mut scroll,
+            selected_process_pid: &mut sel_pid,
+            selected_process_index: &mut sel_idx,
+            drag: &mut drag,
+            mouse: MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column,
                 row: 1,
                 modifiers: KeyModifiers::NONE,
             },
-            Rect::new(0, 0, width, 8),
-            1,
-        )
+            area: Rect::new(0, 0, width, 8),
+            total_rows: 1,
+            metrics: Some(&m),
+            search_box_visible: false,
+            filtered_indices: &idxs,
+        })
     }
 
     /// The hit-test rects are computed by a separate `Layout` call from the one `Table`

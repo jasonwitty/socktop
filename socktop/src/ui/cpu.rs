@@ -589,6 +589,7 @@ mod render_tests {
 
     fn fake_metrics(cores: Vec<f32>) -> Metrics {
         Metrics {
+            sampled_at_ms: None,
             cpu_total: 0.0,
             cpu_per_core: cores,
             mem_total: 1024,

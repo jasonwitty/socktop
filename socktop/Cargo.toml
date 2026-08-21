@@ -1,6 +1,6 @@
 [package]
 name = "socktop"
-version = "1.50.0"
+version = "1.60.0"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Remote system monitor over WebSocket, TUI like top"
 edition = "2024"
@@ -11,7 +11,7 @@ repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
 # socktop connector for agent communication
-socktop_connector = "1.50.0"
+socktop_connector = { version = "1.60.0", path = "../socktop_connector" }
 
 tokio = { workspace = true }
 futures-util = { workspace = true }
@@ -23,7 +23,6 @@ crossterm = { workspace = true }
 unicode-width = { workspace = true }
 anyhow = { workspace = true }
 dirs-next = { workspace = true }
-sysinfo = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"

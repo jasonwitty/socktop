@@ -46,6 +46,7 @@ pub async fn send_request_and_wait(
                 // For now, return a placeholder metrics response indicating binary data received
                 // TODO: Implement proper protobuf decoding for binary data
                 let placeholder_metrics = Metrics {
+                    sampled_at_ms: None,
                     cpu_total: 0.0,
                     cpu_per_core: vec![0.0],
                     mem_total: 0,

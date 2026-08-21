@@ -43,6 +43,46 @@ pub fn truncate_cols(s: &str, max: u16) -> String {
     out
 }
 
+/// Shortens `s` to at most `max` columns by cutting the MIDDLE, marking the
+/// cut with `…` — device names like `/dev/nvme0n1p1` keep their distinctive
+/// prefix and suffix. Column- and char-boundary-safe; the byte-slicing
+/// predecessor in `util.rs` panicked on non-ASCII names.
+pub fn truncate_middle_cols(s: &str, max: u16) -> String {
+    if cols(s) <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return truncate_cols(s, max);
+    }
+    // Reserve one column for the ellipsis; split the rest left/right.
+    let left_budget = (max - 1) / 2;
+    let right_budget = max - 1 - left_budget;
+
+    let mut left_end = 0; // byte index
+    let mut used = 0u16;
+    for (i, ch) in s.char_indices() {
+        let w = cols(ch.encode_utf8(&mut [0u8; 4]));
+        if used + w > left_budget {
+            break;
+        }
+        used += w;
+        left_end = i + ch.len_utf8();
+    }
+
+    let mut right_start = s.len();
+    let mut used = 0u16;
+    for (i, ch) in s.char_indices().rev() {
+        let w = cols(ch.encode_utf8(&mut [0u8; 4]));
+        if used + w > right_budget || i < left_end {
+            break;
+        }
+        used += w;
+        right_start = i;
+    }
+
+    format!("{}…{}", &s[..left_end], &s[right_start..])
+}
+
 /// Picks the first (richest) candidate pair that fits side by side in `width` columns
 /// with at least `gap` columns between them.
 ///
@@ -106,6 +146,23 @@ mod tests {
         }
         // A wide glyph that cannot fit beside the ellipsis is dropped whole.
         assert_eq!(truncate_cols("🔒ab", 2), "…");
+    }
+
+    /// Middle truncation keeps both ends — the parts that identify a device —
+    /// and must never exceed the budget or split a character.
+    #[test]
+    fn truncate_middle_keeps_both_ends_within_budget() {
+        assert_eq!(truncate_middle_cols("/dev/nvme0n1p1", 20), "/dev/nvme0n1p1");
+        let out = truncate_middle_cols("/dev/nvme0n1p1", 9);
+        assert_eq!(cols(&out), 9);
+        assert!(out.starts_with("/dev"), "{out}");
+        assert!(out.ends_with("1p1"), "{out}");
+        assert!(out.contains('…'), "{out}");
+        // Non-ASCII names must not panic (the old byte-slicing version did).
+        for max in 0..12u16 {
+            let out = truncate_middle_cols("диск-🗄️-данные", max);
+            assert!(cols(&out) <= max.max(1), "{out:?} exceeds {max}");
+        }
     }
 
     #[test]

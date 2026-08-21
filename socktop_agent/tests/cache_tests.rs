@@ -42,6 +42,7 @@ async fn test_process_cache_ttl() {
     };
 
     let journal_response = JournalResponse {
+        notice: None,
         entries: vec![],
         total_count: 0,
         truncated: false,

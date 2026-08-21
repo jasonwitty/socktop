@@ -1,6 +1,6 @@
 [package]
 name = "socktop_agent"
-version = "1.50.2"
+version = "1.60.0"
 authors = ["Jason Witty <jasonpwitty+socktop@proton.me>"]
 description = "Socktop agent daemon. Serves host metrics over WebSocket."
 edition = "2024"
@@ -10,11 +10,10 @@ homepage = "https://github.com/jasonwitty/socktop"
 repository = "https://github.com/jasonwitty/socktop"
 
 [dependencies]
-# Tokio: Use minimal features instead of "full" to reduce binary size
-# Only include: rt-multi-thread (async runtime), net (WebSocket), sync (Mutex/RwLock), macros (#[tokio::test])
-# Excluded: io, fs, process, signal, time (not needed for this workload)
-# Savings: ~200-300KB binary size, faster compile times
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+# Tokio: minimal features instead of "full" to reduce binary size.
+# rt-multi-thread (runtime), net (WebSocket), sync (Mutex/oneshot),
+# macros (#[tokio::test]), process (async journalctl).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "process"] }
 axum = { version = "0.7", features = ["ws", "macros"] }
 sysinfo = { version = "0.37", features = ["network", "disk", "component"] }
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +23,10 @@ futures-util = "0.3.31"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 gfxinfo = { version = "0.1.2", optional = true }
+# Direct NVML fallback for distros that ship only libnvidia-ml.so.1 (Debian
+# and derivatives) — gfxinfo's default init dlopens the unversioned name.
+# Same version gfxinfo already pulls in, so this adds no new build cost.
+nvml-wrapper = { version = "0.10", optional = true }
 once_cell = "1.19"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -36,7 +39,7 @@ time = { version = "0.3", default-features = false, features = ["formatting", "m
 
 [features]
 default = ["gpu"]
-gpu = ["gfxinfo"]
+gpu = ["gfxinfo", "nvml-wrapper"]
 logging = ["tracing", "tracing-subscriber"]
 
 [build-dependencies]

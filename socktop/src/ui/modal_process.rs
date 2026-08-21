@@ -472,13 +472,28 @@ impl ModalManager {
             .borders(Borders::ALL);
 
         let content_lines: Vec<Line> = if journal.entries.is_empty() {
-            vec![
+            let mut lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
                     "No journal entries found for this process",
                     Style::default().add_modifier(Modifier::DIM),
                 )),
-            ]
+            ];
+            // Access limits, not absence of logs: show journalctl's own hint
+            // (typical when the agent runs as an unprivileged user, e.g. demo
+            // mode) plus the practical fix.
+            if let Some(notice) = &journal.notice {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("⚠ {notice}"),
+                    Style::default().fg(Color::Yellow),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Run the agent as a service (or a user in the systemd-journal group) for full journal access.",
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
+            }
+            lines
         } else {
             journal
                 .entries
@@ -624,16 +639,29 @@ impl ModalManager {
         // labels + axis title + (top) Y-axis title + legend + spacing.
         let mut lines: Vec<Line> = Vec::with_capacity(plot_height + 6);
 
-        // Y-axis labels and plot content
-        let mut row_buf = String::with_capacity(plot_width);
-        for y in 0..plot_height {
-            let y_value = params.max_system * (1.0 - (y as f64 / (plot_height - 1).max(1) as f64));
-            // 4-char fixed-width label so the axis doesn't shift as digits change.
-            let y_label = if y_value >= 100.0 {
-                format!("{y_value:>4.0}")
+        // Format a CPU-time value: whole ms once past 100, one decimal below.
+        let fmt_ms = |v: f64| {
+            if v >= 100.0 {
+                format!("{v:.0}")
             } else {
-                format!("{y_value:>4.1}")
-            };
+                format!("{v:.1}")
+            }
+        };
+
+        // Y-axis labels, right-aligned to the widest value this frame so the
+        // axis stays a straight line. The old fixed 4-char field predates the
+        // CPU-time unit fix; honest millisecond values (e.g. 136114) blew
+        // through it and skewed the whole axis.
+        let y_values: Vec<String> = (0..plot_height)
+            .map(|y| {
+                fmt_ms(params.max_system * (1.0 - (y as f64 / (plot_height - 1).max(1) as f64)))
+            })
+            .collect();
+        let y_label_w = y_values.iter().map(|s| s.len()).max().unwrap_or(4).max(4);
+
+        let mut row_buf = String::with_capacity(plot_width);
+        for (y, y_value) in y_values.iter().enumerate() {
+            let y_label = format!("{y_value:>y_label_w$}");
 
             // Build the row's char slice into a reusable String buffer.
             row_buf.clear();
@@ -650,8 +678,8 @@ impl ModalManager {
             ]));
         }
 
-        // Add X-axis
-        let x_axis_padding = "     ".to_string(); // Match Y-axis label width
+        // Add X-axis (padding = Y label width + the space before the bar)
+        let x_axis_padding = " ".repeat(y_label_w + 1);
         let x_axis_line = "─".repeat(plot_width + 1);
         lines.push(Line::from(vec![
             Span::styled(x_axis_padding, Style::default()),
@@ -659,13 +687,14 @@ impl ModalManager {
         ]));
 
         // Add X-axis labels
-        let x_label_start = "0.0".to_string();
-        let x_label_mid = format!("{:.1}", params.max_user / 2.0);
-        let x_label_end = format!("{:.1}", params.max_user);
+        let x_label_start = fmt_ms(0.0);
+        let x_label_mid = fmt_ms(params.max_user / 2.0);
+        let x_label_end = fmt_ms(params.max_user);
 
         let spacing = plot_width / 3;
         let x_labels = format!(
-            "     {}{}{}{}{}",
+            "{}{}{}{}{}{}",
+            " ".repeat(y_label_w + 1),
             x_label_start,
             " ".repeat(spacing.saturating_sub(x_label_start.len())),
             x_label_mid,
@@ -677,7 +706,7 @@ impl ModalManager {
 
         // Add axis titles with better visibility
         lines.push(Line::from(vec![Span::styled(
-            "     User CPU Time (ms) →",
+            format!("{}User CPU Time (ms) →", " ".repeat(y_label_w + 1)),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),

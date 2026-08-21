@@ -13,49 +13,60 @@ use std::collections::HashMap;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 #[cfg(feature = "logging")]
 use tracing::warn;
 
 // NOTE: CPU normalization env removed; non-Linux now always reports per-process share (0..100) as given by sysinfo.
 
-// Read (utime, stime) in milliseconds from /proc/{pid}/stat in one go.
-// Returns (0, 0) if the file can't be read.
-//
-// We use `rfind(')')` to step past the `comm` field, which can contain
-// arbitrary characters (including spaces and parens), then index the
-// post-comm fields by position. This is the same trick `read_proc_jiffies`
-// uses below — `split_whitespace().collect::<Vec<_>>()` from the start of
-// the file would mis-parse process names with spaces, and also wastes an
-// allocation per call. Two callers used to read this file twice (once for
-// user, once for system); now it's one syscall per detailed-process record.
+/// Shared parsing for `/proc/<pid>/stat` (and per-thread `task/<tid>/stat`).
+///
+/// The second field, `comm`, can contain arbitrary bytes including spaces and
+/// parentheses, so naive whitespace splitting mis-parses such names. All
+/// callers step past the LAST `')'` and index the remaining space-separated
+/// fields from there: 0 = state, 1 = ppid, 11 = utime, 12 = stime,
+/// 19 = starttime.
 #[cfg(target_os = "linux")]
-fn get_cpu_times_ms(pid: u32) -> (u64, u64) {
+mod procstat {
+    /// Everything after `") "` — the post-comm fields.
+    pub fn after_comm(stat: &str) -> Option<&str> {
+        stat.get(stat.rfind(')')? + 2..)
+    }
+    pub fn field(stat: &str, n: usize) -> Option<&str> {
+        after_comm(stat)?.split_whitespace().nth(n)
+    }
+    /// (utime, stime) in clock ticks.
+    pub fn utime_stime(stat: &str) -> Option<(u64, u64)> {
+        let mut it = after_comm(stat)?.split_whitespace();
+        let utime = it.nth(11)?.parse().ok()?;
+        let stime = it.next()?.parse().ok()?;
+        Some((utime, stime))
+    }
+    /// One clock tick at USER_HZ=100 (universal on Linux) in microseconds.
+    pub const TICK_US: u64 = 10_000;
+}
+
+// Read (utime, stime) in MICROSECONDS from /proc/{pid}/stat in one syscall.
+// Returns (0, 0) if the file can't be read. Units match the wire contract
+// (`DetailedProcessInfo.cpu_time_user` is documented as µs) and the thread
+// records — this used to return ms, making process/child CPU times render
+// 1000x too small next to thread times.
+#[cfg(target_os = "linux")]
+fn get_cpu_times_us(pid: u32) -> (u64, u64) {
     let Ok(s) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return (0, 0);
     };
-    let Some(rpar) = s.rfind(')') else {
+    let Some((utime, stime)) = procstat::utime_stime(&s) else {
         return (0, 0);
     };
-    let Some(after) = s.get(rpar + 2..) else {
-        return (0, 0);
-    };
-    let mut it = after.split_whitespace();
-    // Post-comm field offsets: state, ppid, pgrp, session, tty_nr, tpgid,
-    // flags, minflt, cminflt, majflt, cmajflt, utime, stime, ...
-    // utime is offset 11; stime follows.
-    let utime = it.nth(11).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    let stime = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    // 1 tick = 10ms at 100 Hz (USER_HZ).
-    (utime * 10, stime * 10)
+    (utime * procstat::TICK_US, stime * procstat::TICK_US)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn get_cpu_times_ms(_pid: u32) -> (u64, u64) {
+fn get_cpu_times_us(_pid: u32) -> (u64, u64) {
     (0, 0)
 }
 // Runtime toggles (read once)
@@ -117,45 +128,31 @@ fn name_cache_cleanup_threshold() -> usize {
     })
 }
 
-// Tiny TTL caches to avoid rescanning sensors every 500ms
+// Tiny TTL caches to avoid rescanning sensors every 500ms.
+//
+// The cached type is Option<...>: a fresh `None` means "we looked recently
+// and found nothing" — machines with no matching sensor/GPU no longer rescan
+// on every request, only once per TTL.
 const TTL: Duration = Duration::from_millis(1500);
-struct TempCache {
-    at: Option<Instant>,
-    v: Option<f32>,
-}
-static TEMP: OnceCell<Mutex<TempCache>> = OnceCell::new();
+static TEMP: crate::state::TtlCell<Option<f32>> = crate::state::TtlCell::new();
+static GPUS: crate::state::TtlCell<Option<Vec<crate::gpu::GpuMetrics>>> =
+    crate::state::TtlCell::new();
 
-// Last time `state.components` was refreshed (by any caller). Both
+// Gate on `state.components` refreshes (hwmon scans). Both
 // collect_fast_metrics and collect_disks need fresh sensor values; without
-// this gate they were each doing their own `Components::refresh` on their
-// own cadence, paying the hwmon syscall cost twice per polling cycle.
-// 1s is short enough that disk temps stay accurate (they change slowly) and
-// long enough to suppress back-to-back refreshes from concurrent endpoints.
+// this they each paid the hwmon syscall cost on their own cadence. 1s keeps
+// disk temps accurate (they change slowly) while suppressing back-to-back
+// refreshes from concurrent endpoints.
 const COMPONENTS_REFRESH_TTL: Duration = Duration::from_millis(1000);
-static COMPONENTS_LAST_REFRESH: OnceCell<Mutex<Option<Instant>>> = OnceCell::new();
+static COMPONENTS_STAMP: crate::state::TtlCell<()> = crate::state::TtlCell::new();
 
-/// Refresh `state.components` only if the cached refresh timestamp is older
-/// than `COMPONENTS_REFRESH_TTL`. Caller must already hold the components
-/// lock.
+/// Refresh `state.components` at most once per `COMPONENTS_REFRESH_TTL`.
+/// Caller must already hold the components lock.
 fn refresh_components_if_stale(components: &mut sysinfo::Components) {
-    let lock = COMPONENTS_LAST_REFRESH.get_or_init(|| Mutex::new(None));
-    let mut last = match lock.lock() {
-        Ok(g) => g,
-        Err(_) => return, // Poisoned — skip; values stay as-is until next call
-    };
-    let now = Instant::now();
-    let stale = last.is_none_or(|t| now.duration_since(t) >= COMPONENTS_REFRESH_TTL);
-    if stale {
+    if COMPONENTS_STAMP.claim_stale(COMPONENTS_REFRESH_TTL) {
         components.refresh(false);
-        *last = Some(now);
     }
 }
-
-struct GpuCache {
-    at: Option<Instant>,
-    v: Option<Vec<crate::gpu::GpuMetrics>>,
-}
-static GPUC: OnceCell<Mutex<GpuCache>> = OnceCell::new();
 
 // Static caches for unchanging data
 static HOSTNAME: OnceCell<String> = OnceCell::new();
@@ -165,54 +162,6 @@ struct NetworkNameCache {
 }
 static NETWORK_CACHE: OnceCell<Mutex<NetworkNameCache>> = OnceCell::new();
 static CPU_VEC: OnceCell<Mutex<Vec<f32>>> = OnceCell::new();
-
-fn cached_temp() -> Option<f32> {
-    if !temp_enabled() {
-        return None;
-    }
-    let now = Instant::now();
-    let lock = TEMP.get_or_init(|| Mutex::new(TempCache { at: None, v: None }));
-    let mut c = lock.lock().ok()?;
-    if c.at.is_none_or(|t| now.duration_since(t) >= TTL) {
-        c.at = Some(now);
-        // caller will fill this; we just hold a slot
-        c.v = None;
-    }
-    c.v
-}
-
-fn set_temp(v: Option<f32>) {
-    if let Some(lock) = TEMP.get()
-        && let Ok(mut c) = lock.lock()
-    {
-        c.v = v;
-        c.at = Some(Instant::now());
-    }
-}
-
-fn cached_gpus() -> Option<Vec<crate::gpu::GpuMetrics>> {
-    if !gpu_enabled() {
-        return None;
-    }
-    let now = Instant::now();
-    let lock = GPUC.get_or_init(|| Mutex::new(GpuCache { at: None, v: None }));
-    let mut c = lock.lock().ok()?;
-    if c.at.is_none_or(|t| now.duration_since(t) >= TTL) {
-        // mark stale; caller will refresh
-        c.at = Some(now);
-        c.v = None;
-    }
-    c.v.clone()
-}
-
-fn set_gpus(v: Option<Vec<crate::gpu::GpuMetrics>>) {
-    if let Some(lock) = GPUC.get()
-        && let Ok(mut c) = lock.lock()
-    {
-        c.v = v.clone();
-        c.at = Some(Instant::now());
-    }
-}
 
 // Collect only fast-changing metrics (CPU/mem/net + optional temps/gpus).
 pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
@@ -253,10 +202,13 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
     let swap_used = sys.used_swap();
     drop(sys);
 
-    // CPU temperature: only refresh sensors if cache is stale
-    let cpu_temp_c = if cached_temp().is_some() {
-        cached_temp()
-    } else if temp_enabled() {
+    // CPU temperature: only rescan sensors when the cached result (even a
+    // cached "no sensor found") goes stale.
+    let cpu_temp_c = if !temp_enabled() {
+        None
+    } else if let Some(cached) = TEMP.get_fresh(TTL) {
+        cached
+    } else {
         let val = {
             let mut components = state.components.lock().await;
             refresh_components_if_stale(&mut components);
@@ -273,10 +225,8 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
                 }
             })
         };
-        set_temp(val);
+        TEMP.set(val);
         val
-    } else {
-        None
     };
 
     // Networks with reusable name cache
@@ -320,47 +270,37 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         cache.infos.clone()
     };
 
-    // GPUs: if we already determined none exist, short-circuit (no repeated probing)
-    let gpus = if gpu_enabled() {
-        if state.gpu_checked.load(std::sync::atomic::Ordering::Acquire)
-            && !state.gpu_present.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            None
-        } else if cached_gpus().is_some() {
-            cached_gpus()
-        } else {
-            let v = match collect_all_gpus() {
-                Ok(v) if !v.is_empty() => Some(v),
-                Ok(_) => None,
-                Err(_e) => {
-                    #[cfg(feature = "logging")]
-                    warn!("gpu collection failed: {_e}");
-                    None
-                }
-            };
-            // First probe records presence; subsequent calls rely on cache flags.
-            if !state
-                .gpu_checked
-                .swap(true, std::sync::atomic::Ordering::AcqRel)
-            {
-                if v.is_some() {
-                    state
-                        .gpu_present
-                        .store(true, std::sync::atomic::Ordering::Release);
-                } else {
-                    state
-                        .gpu_present
-                        .store(false, std::sync::atomic::Ordering::Release);
-                }
-            }
-            set_gpus(v.clone());
-            v
-        }
-    } else {
+    // GPUs: negative-probe cache short-circuits GPU-less hosts; otherwise the
+    // TTL cache answers, and only a stale miss reaches the worker thread.
+    let gpus = if !gpu_enabled()
+        || (state.gpu_checked.load(std::sync::atomic::Ordering::Acquire)
+            && !state.gpu_present.load(std::sync::atomic::Ordering::Relaxed))
+    {
         None
+    } else if let Some(cached) = GPUS.get_fresh(TTL) {
+        cached
+    } else {
+        let v = collect_all_gpus().await;
+        // First probe records presence; subsequent calls rely on the flags.
+        if !state
+            .gpu_checked
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            state
+                .gpu_present
+                .store(v.is_some(), std::sync::atomic::Ordering::Release);
+        }
+        GPUS.set(v.clone());
+        v
     };
 
+    let sampled_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
     let metrics = Metrics {
+        sampled_at_ms,
         cpu_total,
         cpu_per_core,
         mem_total,
@@ -379,6 +319,48 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         cache.set(metrics.clone());
     }
     metrics
+}
+
+/// Best-effort parent-disk name for a partition device name:
+/// "nvme0n1p1" -> "nvme0n1", "mmcblk0p2" -> "mmcblk0", "sda1" -> "sda".
+/// Works with or without a "/dev/" prefix.
+fn parent_disk_name(name: &str) -> &str {
+    if let Some(pos) = name.rfind('p') {
+        let suffix = &name[pos + 1..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &name[..pos];
+        }
+    }
+    name.trim_end_matches(|c: char| c.is_ascii_digit())
+}
+
+/// Whether a device name refers to a partition rather than a whole disk.
+///
+/// On Linux, whole-disk devices are directories under /sys/block and
+/// partitions are not, so "is a partition" = "not in /sys/block, but the
+/// derived parent is". This gets right the cases the old name heuristic got
+/// wrong: a whole-disk filesystem on nvme0n1 (ends in a digit but IS in
+/// /sys/block) and zram1 (a whole device). Non-Linux keeps the heuristic.
+fn is_partition_name(name: &str) -> bool {
+    let bare = name.strip_prefix("/dev/").unwrap_or(name);
+    #[cfg(target_os = "linux")]
+    {
+        let sys_block = std::path::Path::new("/sys/block");
+        if sys_block.is_dir() {
+            return !sys_block.join(bare).is_dir()
+                && sys_block.join(parent_disk_name(bare)).is_dir();
+        }
+    }
+    is_partition_heuristic(bare)
+}
+
+/// Name-based fallback for platforms without /sys/block: a p<digits> marker
+/// or a trailing non-zero digit.
+fn is_partition_heuristic(bare: &str) -> bool {
+    bare.contains("p1")
+        || bare.contains("p2")
+        || bare.contains("p3")
+        || bare.ends_with(|c: char| c.is_ascii_digit() && c != '0')
 }
 
 // Cached disks
@@ -445,19 +427,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
                 return None;
             }
 
-            // Determine if this is a partition
-            let is_partition = name.contains("p1")
-                || name.contains("p2")
-                || name.contains("p3")
-                || name.ends_with('1')
-                || name.ends_with('2')
-                || name.ends_with('3')
-                || name.ends_with('4')
-                || name.ends_with('5')
-                || name.ends_with('6')
-                || name.ends_with('7')
-                || name.ends_with('8')
-                || name.ends_with('9');
+            let is_partition = is_partition_name(&name);
 
             // Try to find temperature for this disk
             let temperature = disk_temps.iter().find_map(|(key, &temp)| {
@@ -491,25 +461,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
 
     for partition in &partitions {
         if partition.is_partition {
-            // Extract parent disk name
-            // nvme0n1p1 -> nvme0n1, sda1 -> sda, mmcblk0p1 -> mmcblk0
-            let parent_name = if let Some(pos) = partition.name.rfind('p') {
-                // Check if character after 'p' is a digit
-                if partition
-                    .name
-                    .chars()
-                    .nth(pos + 1)
-                    .is_some_and(|c| c.is_ascii_digit())
-                {
-                    &partition.name[..pos]
-                } else {
-                    // Handle sda1, sdb2, etc (just trim trailing digit)
-                    partition.name.trim_end_matches(char::is_numeric)
-                }
-            } else {
-                // Handle sda1, sdb2, etc (just trim trailing digit)
-                partition.name.trim_end_matches(char::is_numeric)
-            };
+            let parent_name = parent_disk_name(&partition.name);
 
             // Look up temperature for the PARENT disk, not the partition
             // Strip /dev/ prefix if present for matching
@@ -553,21 +505,7 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
     // Add partitions after their parent disk
     for partition in partitions {
         if partition.is_partition {
-            // Find parent disk index
-            let parent_name = if let Some(pos) = partition.name.rfind('p') {
-                if partition
-                    .name
-                    .chars()
-                    .nth(pos + 1)
-                    .is_some_and(|c| c.is_ascii_digit())
-                {
-                    &partition.name[..pos]
-                } else {
-                    partition.name.trim_end_matches(char::is_numeric)
-                }
-            } else {
-                partition.name.trim_end_matches(char::is_numeric)
-            };
+            let parent_name = parent_disk_name(&partition.name);
 
             // Find where to insert this partition (after its parent)
             if let Some(parent_idx) = disks.iter().position(|d| d.name == parent_name) {
@@ -619,15 +557,8 @@ fn read_total_jiffies() -> io::Result<u64> {
 #[cfg(target_os = "linux")]
 #[inline]
 fn read_proc_jiffies(pid: u32) -> Option<u64> {
-    let path = format!("/proc/{pid}/stat");
-    let s = fs::read_to_string(path).ok()?;
-    // Find the right parenthesis that terminates comm; everything after is space-separated fields starting at "state"
-    let rpar = s.rfind(')')?;
-    let after = s.get(rpar + 2..)?; // skip ") "
-    let mut it = after.split_whitespace();
-    // utime (14th field) is offset 11 from "state", stime (15th) is next
-    let utime = it.nth(11)?.parse::<u64>().ok()?;
-    let stime = it.next()?.parse::<u64>().ok()?;
+    let s = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (utime, stime) = procstat::utime_stime(&s)?;
     Some(utime.saturating_add(stime))
 }
 
@@ -818,9 +749,12 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             };
 
             // Convert to percentage of total CPU capacity
-            // e.g., 100% on 2 cores of 8 core system = 25% total CPU
-            let raw = p.cpu_usage(); // This is per-core percentage
-            let total_cpu = raw.clamp(0.0, 100.0) / cpu_count;
+            // e.g., 100% on 2 cores of 8 core system = 25% total CPU.
+            // sysinfo reports per-core percentage which EXCEEDS 100 for
+            // multi-threaded processes, so clamp AFTER dividing — clamping
+            // first truncated e.g. 400%-on-8-cores to 12.5% instead of 50%.
+            let raw = p.cpu_usage();
+            let total_cpu = (raw / cpu_count.max(1.0)).clamp(0.0, 100.0);
 
             proc_cache.reusable_vec.push(ProcessInfo {
                 pid,
@@ -984,15 +918,8 @@ fn proc_state_label(c: char) -> &'static str {
 #[cfg(target_os = "linux")]
 fn read_parent_pid_from_proc(pid: u32) -> Option<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Format: pid (comm) state ppid ... — comm can contain spaces/parens,
-    // so we step past the closing paren first.
-    let ppid_start = stat.rfind(')')?;
-    // After ") ": state, ppid, ... — ppid is the second field.
-    stat[ppid_start + 1..]
-        .split_whitespace()
-        .nth(1)?
-        .parse::<u32>()
-        .ok()
+    // Post-comm field 1 is ppid.
+    procstat::field(&stat, 1)?.parse::<u32>().ok()
 }
 
 /// Collect process information from /proc files
@@ -1035,16 +962,9 @@ fn collect_process_info_from_proc(
     let thread_count = st.threads;
     let status = proc_state_label(st.state_ch).to_string();
 
-    // Read start time from stat — comm-safe via rfind(')').
+    // starttime is post-comm field 19.
     let start_time = if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        let stat_end = stat.rfind(')')?;
-        // After ") ": state, ppid, ..., starttime — starttime is the 20th
-        // post-comm field (index 19).
-        stat[stat_end + 1..]
-            .split_whitespace()
-            .nth(19)?
-            .parse::<u64>()
-            .ok()?
+        procstat::field(&stat, 19)?.parse::<u64>().ok()?
     } else {
         0
     };
@@ -1079,7 +999,7 @@ fn collect_process_info_from_proc(
         .map(|p| p.to_string_lossy().to_string());
 
     // One read of /proc/{pid}/stat covers both user + system CPU times.
-    let (cpu_time_user, cpu_time_system) = get_cpu_times_ms(pid);
+    let (cpu_time_user, cpu_time_system) = get_cpu_times_us(pid);
 
     Some(DetailedProcessInfo {
         pid,
@@ -1192,18 +1112,7 @@ fn collect_thread_info(pid: u32) -> Vec<crate::types::ThreadInfo> {
             continue;
         };
 
-        // Thread/comm names can contain spaces or parens, so step past the
-        // last ')' before parsing post-comm fields. Post-comm offsets:
-        //   0: state, 1: ppid, 2: pgrp, ..., 11: utime, 12: stime
-        let Some(rpar) = stat_content.rfind(')') else {
-            continue;
-        };
-        let Some(after) = stat_content.get(rpar + 1..) else {
-            continue;
-        };
-        let mut it = after.split_whitespace();
-        let status = it
-            .next()
+        let status = procstat::field(&stat_content, 0)
             .and_then(|s| s.chars().next())
             .map(|c| match c {
                 'R' => "Running",
@@ -1218,14 +1127,9 @@ fn collect_thread_info(pid: u32) -> Vec<crate::types::ThreadInfo> {
             .unwrap_or("Unknown")
             .to_string();
 
-        // 10 fields between state and utime (ppid..cmajflt).
-        let utime = it.nth(10).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let stime = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-
-        // Convert clock ticks to microseconds (assuming 100 Hz)
-        // 1 tick = 10ms = 10,000 microseconds
-        let cpu_time_user = utime * 10_000;
-        let cpu_time_system = stime * 10_000;
+        let (utime, stime) = procstat::utime_stime(&stat_content).unwrap_or((0, 0));
+        let cpu_time_user = utime * procstat::TICK_US;
+        let cpu_time_system = stime * procstat::TICK_US;
 
         threads.push(crate::types::ThreadInfo {
             tid,
@@ -1257,10 +1161,17 @@ pub async fn collect_process_metrics(
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid)]),
         false,
+        // cmd/exe/cwd feed the modal's Command & Details pane. They're
+        // immutable per process, so OnlyIfNotSet reads them once per PID and
+        // serves the cache afterwards — the "minimal refresh" optimization
+        // had dropped them entirely, leaving the pane blank.
         ProcessRefreshKind::nothing()
             .with_memory()
             .with_cpu()
-            .with_disk_usage(),
+            .with_disk_usage()
+            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_cwd(sysinfo::UpdateKind::OnlyIfNotSet),
     );
 
     let process = system
@@ -1350,7 +1261,7 @@ pub async fn collect_process_metrics(
     let threads = collect_thread_info(pid);
 
     // One read of /proc/{pid}/stat covers both user + system CPU times.
-    let (cpu_time_user, cpu_time_system) = get_cpu_times_ms(pid);
+    let (cpu_time_user, cpu_time_system) = get_cpu_times_us(pid);
 
     // Now construct the detailed info without holding the lock
     let detailed_info = DetailedProcessInfo {
@@ -1384,9 +1295,26 @@ pub async fn collect_process_metrics(
     })
 }
 
-/// Collect journal entries for a specific process
-pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
-    let output = Command::new("journalctl")
+/// Epoch microseconds -> RFC 3339 UTC for display. The old code
+/// Debug-formatted a SystemTime and string-replaced it into a raw epoch
+/// string that was neither ISO 8601 nor what the field documented.
+fn format_journal_timestamp(timestamp_us: u64) -> String {
+    time::OffsetDateTime::from_unix_timestamp_nanos(timestamp_us as i128 * 1000)
+        .ok()
+        .and_then(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| timestamp_us.to_string())
+}
+
+/// Collect journal entries for a specific process.
+///
+/// Async via tokio::process — journalctl can take hundreds of ms on slow
+/// storage, and the old std::process call blocked one of the runtime's two
+/// worker threads for the duration.
+pub async fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
+    let output = tokio::process::Command::new("journalctl")
         .args([
             &format!("_PID={pid}"),
             "--output=json",
@@ -1394,6 +1322,7 @@ pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
             "--no-pager",
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to execute journalctl: {e}"))?;
 
     if !output.status.success() {
@@ -1415,27 +1344,14 @@ pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
         let json: serde_json::Value =
             serde_json::from_str(line).map_err(|e| format!("Failed to parse journal JSON: {e}"))?;
 
-        // Extract relevant fields
-        let timestamp_str = json
+        // __REALTIME_TIMESTAMP is epoch microseconds as a string.
+        let timestamp_us = json
             .get("__REALTIME_TIMESTAMP")
             .and_then(|v| v.as_str())
-            .unwrap_or("0");
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
 
-        // Convert timestamp to ISO 8601 format
-        let timestamp = if let Ok(ts_micros) = timestamp_str.parse::<u64>() {
-            let ts_secs = ts_micros / 1_000_000;
-            let ts_nanos = (ts_micros % 1_000_000) * 1000;
-            let time = SystemTime::UNIX_EPOCH
-                + Duration::from_secs(ts_secs)
-                + Duration::from_nanos(ts_nanos);
-            // Simple ISO 8601 format - we can improve this if needed
-            format!("{time:?}")
-                .replace("SystemTime { tv_sec: ", "")
-                .replace(", tv_nsec: ", ".")
-                .replace(" }", "")
-        } else {
-            timestamp_str.to_string()
-        };
+        let timestamp = format_journal_timestamp(timestamp_us);
 
         let priority = match json.get("PRIORITY").and_then(|v| v.as_str()) {
             Some("0") => LogLevel::Emergency,
@@ -1482,6 +1398,7 @@ pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
 
         entries.push(JournalEntry {
             timestamp,
+            timestamp_us,
             priority,
             message,
             unit,
@@ -1493,7 +1410,26 @@ pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
     }
 
     // Sort by timestamp (newest first)
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp_us));
+
+    // journalctl exits 0 with no output when the invoking user simply cannot
+    // SEE the process's entries (e.g. a user-run agent asking about a system
+    // service) — but it explains itself on stderr ("You are currently not
+    // seeing messages from other users and the system…"). Pass that hint
+    // along so the client can distinguish "no logs" from "no access".
+    let notice = if entries.is_empty() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let hint: String = err
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if hint.is_empty() { None } else { Some(hint) }
+    } else {
+        None
+    };
 
     let response_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1507,6 +1443,70 @@ pub fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String> {
         entries,
         total_count,
         truncated,
+        notice,
         cached_at: response_timestamp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// comm can contain spaces and parens; parsing must key off the LAST ')'.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procstat_handles_hostile_comm_names() {
+        let stat = "1234 (weird name) (2)) R 1 2 3 4 5 6 7 8 9 10 700 800 0 0 20";
+        assert_eq!(procstat::field(stat, 0), Some("R"));
+        assert_eq!(procstat::field(stat, 1), Some("1"));
+        assert_eq!(procstat::utime_stime(stat), Some((700, 800)));
+    }
+
+    /// USER_HZ ticks convert to MICROSECONDS — the wire contract. This used
+    /// to be *10 (ms), rendering process CPU times 1000x too small next to
+    /// thread times.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_times_are_microseconds() {
+        assert_eq!(procstat::TICK_US, 10_000);
+    }
+
+    #[test]
+    fn parent_disk_name_strips_partition_suffixes() {
+        assert_eq!(parent_disk_name("nvme0n1p1"), "nvme0n1");
+        assert_eq!(parent_disk_name("nvme1n1p12"), "nvme1n1");
+        assert_eq!(parent_disk_name("mmcblk0p2"), "mmcblk0");
+        assert_eq!(parent_disk_name("sda1"), "sda");
+        assert_eq!(parent_disk_name("/dev/nvme0n1p1"), "/dev/nvme0n1");
+        // 'p' inside a word is not a partition marker.
+        assert_eq!(parent_disk_name("mapper/vg-lv"), "mapper/vg-lv");
+    }
+
+    /// The old heuristic flagged whole-disk names ending in a digit
+    /// (nvme0n1, zram1) as partitions. On Linux /sys/block decides; this
+    /// pins the real-machine behavior for devices every Linux box has.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sys_block_devices_are_not_partitions() {
+        let sys_block = std::path::Path::new("/sys/block");
+        if !sys_block.is_dir() {
+            return; // exotic environment; nothing to assert
+        }
+        for entry in std::fs::read_dir(sys_block).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                !is_partition_name(&name),
+                "{name} is a whole disk but was flagged as a partition"
+            );
+        }
+    }
+
+    #[test]
+    fn journal_timestamps_are_rfc3339() {
+        let s = format_journal_timestamp(1_786_752_000_000_000);
+        assert_eq!(s, "2026-08-15T00:00:00Z");
+        // Sub-second precision survives.
+        let s = format_journal_timestamp(1_786_752_000_123_456);
+        assert!(s.starts_with("2026-08-15T00:00:00.123456"), "{s}");
+    }
 }

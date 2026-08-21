@@ -33,7 +33,7 @@ async fn test_collect_journal_entries_self() {
     // Test collecting journal entries for our own process
     let pid = process::id();
 
-    match collect_journal_entries(pid) {
+    match collect_journal_entries(pid).await {
         Ok(response) => {
             assert!(response.cached_at > 0);
             println!(
@@ -74,7 +74,7 @@ async fn test_collect_journal_entries_invalid_pid() {
     // Test with an invalid PID - journalctl might still return empty results
     let invalid_pid = 999999;
 
-    match collect_journal_entries(invalid_pid) {
+    match collect_journal_entries(invalid_pid).await {
         Ok(response) => {
             println!(
                 "✓ Journal query completed for invalid PID {} (empty result expected): {} entries",
@@ -86,4 +86,20 @@ async fn test_collect_journal_entries_invalid_pid() {
             println!("✓ Journal query failed for invalid PID {invalid_pid}: {e}");
         }
     }
+}
+
+/// The Command & Details pane went blank when the minimal-refresh
+/// optimization dropped cmd from the detail endpoint's refresh kind.
+#[tokio::test]
+async fn test_process_metrics_include_command() {
+    let state = AppState::new();
+    let pid = std::process::id();
+    let resp = collect_process_metrics(pid, &state)
+        .await
+        .expect("collect self");
+    assert!(
+        !resp.process.command.is_empty(),
+        "command should not be empty for self (cmdline is always readable)"
+    );
+    println!("command = {}", resp.process.command);
 }
