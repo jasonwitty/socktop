@@ -32,6 +32,16 @@ say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# The entire remainder runs inside main(), invoked on the LAST line. This
+# makes the script safe against being MODIFIED WHILE RUNNING: when executed
+# from the clone it manages, the git checkout below replaces this very file,
+# and bash reads scripts lazily by byte offset — without this wrapper it
+# resumes parsing the NEW file at the OLD offset and executes an arbitrary
+# tail of it (observed: the fresh-service path ran on a host whose unit
+# already existed). With main(), the whole script is parsed before any of
+# it executes.
+main() {
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -131,7 +141,7 @@ if [ "$SYS_SUDO" = "__none__" ] && [ "$NO_SERVICE" -eq 0 ]; then
   NO_SERVICE=1
 fi
 if [ "$OS" = "Linux" ] && [ "$NO_SERVICE" -eq 0 ] && command -v systemctl >/dev/null; then
-  if systemctl list-unit-files 2>/dev/null | grep -q '^socktop-agent\.service'; then
+  if systemctl cat socktop-agent.service >/dev/null 2>&1; then
     # UPGRADE: the unit file is the operator's (SSL, tokens, ports may be
     # configured there) — never overwrite it. Only the binary it points at
     # is replaced, then the service is restarted.
@@ -228,3 +238,9 @@ say "Installed:"
 "$PREFIX/socktop_agent" --version
 say "Active on PATH: $(type -p socktop || true) / $(type -p socktop_agent || true)"
 socktop --version
+
+}
+
+# exit in the same parse unit as the call: after main returns, bash must not
+# read another byte from this (possibly replaced) file.
+main "$@"; exit $?
