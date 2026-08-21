@@ -58,7 +58,7 @@ mod worker {
         /// ship only libnvidia-ml.so.1 (the unversioned symlink lives in the
         /// dev package), so gfxinfo's default dlopen fails there even though
         /// the driver is fully functional.
-        Nvml(nvml_wrapper::Nvml),
+        Nvml(Box<nvml_wrapper::Nvml>),
     }
 
     fn probe() -> Option<Handle> {
@@ -69,7 +69,7 @@ mod worker {
             .lib_path(std::ffi::OsStr::new("libnvidia-ml.so.1"))
             .init()
             .ok()
-            .map(Handle::Nvml)
+            .map(|nvml| Handle::Nvml(Box::new(nvml)))
     }
 
     fn collect_from(handle: &Handle) -> Option<Vec<GpuMetrics>> {
