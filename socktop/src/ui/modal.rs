@@ -91,18 +91,40 @@ impl ModalManager {
         }
         m
     }
-    /// Close the details view for `pid` if that is what is currently on top.
+    /// Close the details view for `pid` WHEREVER it sits in the stack.
     /// Returns whether anything was closed.
     ///
-    /// Only the top modal, deliberately: with a parent-navigation chain, the
-    /// views underneath are other processes that may still be alive, and each
-    /// closes itself the same way once its own process goes.
+    /// Not just the top: killing from inside the details view stacks the
+    /// "Signal sent" Info modal on top of it, and a SIGKILL victim is usually
+    /// confirmed dead on the very next tick — while that Info is still up. A
+    /// top-only check missed the close, and since a gone PID is processed
+    /// once, the details view stayed open (frozen on the dead process's last
+    /// sample) with nothing left to ever close it.
+    ///
+    /// Per-PID matching keeps the parent-navigation property: only the dead
+    /// process's view goes; parent views underneath are other processes that
+    /// may still be alive and close themselves the same way.
     pub fn close_process_details(&mut self, pid: u32) -> bool {
-        if matches!(self.stack.last(), Some(ModalType::ProcessDetails { pid: p }) if *p == pid) {
-            self.pop_modal();
-            return true;
+        let was_top =
+            matches!(self.stack.last(), Some(ModalType::ProcessDetails { pid: p }) if *p == pid);
+        let before = self.stack.len();
+        self.stack
+            .retain(|m| !matches!(m, ModalType::ProcessDetails { pid: p } if *p == pid));
+        if self.stack.len() == before {
+            return false;
         }
-        false
+        // Mirror pop_modal's focus bookkeeping when the top changed.
+        if was_top && let Some(next) = self.stack.last() {
+            self.active_button = match next {
+                ModalType::ConnectionError { .. } => ModalButton::Retry,
+                ModalType::ProcessDetails { .. } => ModalButton::Ok,
+                ModalType::About => ModalButton::Ok,
+                ModalType::Help => ModalButton::Ok,
+                ModalType::Confirmation { .. } => ModalButton::Confirm,
+                ModalType::Info { .. } => ModalButton::Ok,
+            };
+        }
+        true
     }
 
     pub fn update_connection_error_countdown(&mut self, new_countdown: Option<u64>) {
@@ -1033,30 +1055,43 @@ mod close_details_tests {
         assert!(m.is_active());
     }
 
-    /// Walking up to a parent stacks details views. A child dying must close
-    /// only its own view and reveal the parent's, which is still valid.
+    /// Walking up to a parent stacks details views. Only the dead process's
+    /// view goes — whichever position it holds — and the survivor stays put.
     #[test]
-    fn only_closes_the_top_of_a_parent_chain() {
+    fn closes_only_the_dead_pids_view_in_a_parent_chain() {
         let mut m = ModalManager::new();
         m.push_modal(ModalType::ProcessDetails { pid: 100 }); // parent
         m.push_modal(ModalType::ProcessDetails { pid: 200 }); // child, on top
 
-        assert!(!m.close_process_details(100), "closed a view below the top");
-        assert!(m.close_process_details(200));
+        // Parent dies while the child is viewed: its view is removed from
+        // UNDER the top, so closing the child later lands on the process list
+        // instead of a frozen corpse view.
+        assert!(m.close_process_details(100));
         assert!(matches!(
             m.current_modal(),
-            Some(ModalType::ProcessDetails { pid: 100 })
+            Some(ModalType::ProcessDetails { pid: 200 })
         ));
+        assert!(m.close_process_details(200));
+        assert!(!m.is_active());
     }
 
+    /// The F1 regression: killing from inside the details view stacks the
+    /// "Signal sent" Info on top, and the death is usually confirmed while
+    /// that Info is still up. The details view must close anyway — a top-only
+    /// check left it open forever, frozen on the dead process.
     #[test]
-    fn does_nothing_when_another_modal_is_on_top() {
+    fn closes_details_beneath_a_stacked_info_modal() {
         let mut m = ModalManager::new();
         m.push_modal(ModalType::ProcessDetails { pid: 7 });
         m.push_modal(ModalType::Info {
-            title: "t".into(),
-            message: "m".into(),
+            title: "Signal sent".into(),
+            message: "Sent SIGKILL".into(),
         });
-        assert!(!m.close_process_details(7));
+
+        assert!(m.close_process_details(7));
+        // The Info survives on top; dismissing it lands on the process list.
+        assert!(matches!(m.current_modal(), Some(ModalType::Info { .. })));
+        m.pop_modal();
+        assert!(!m.is_active());
     }
 }

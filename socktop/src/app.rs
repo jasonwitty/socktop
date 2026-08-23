@@ -52,19 +52,20 @@ use socktop_connector::{
 const MIN_METRICS_INTERVAL_MS: u64 = 100;
 const MIN_PROCESSES_INTERVAL_MS: u64 = 200;
 
-/// How long to wait before forcing a process-list refresh after a kill. Just
-/// past the agent's default `Processes` cache TTL of 1500ms, so the answer
-/// reflects the kill instead of the cached snapshot taken before it.
-const PROC_CACHE_SETTLE: Duration = Duration::from_millis(1_600);
+/// Floor for the post-kill forced refresh delay: just past the agent's
+/// DEFAULT `Processes` cache TTL of 1500ms, so the answer reflects the kill
+/// instead of the cached snapshot taken before it. The effective delay scales
+/// with the user's processes interval — see [`App::proc_refresh_settle`].
+const PROC_CACHE_SETTLE_FLOOR: Duration = Duration::from_millis(1_600);
+
+/// Margin a tombstone outlives the settle window by. With default intervals
+/// this reproduces the original fixed 5s tombstone (1.6s + 3.4s).
+const TOMBSTONE_MARGIN: Duration = Duration::from_millis(3_400);
 
 /// How long to keep re-checking a signalled process for its exit. Long enough
 /// to cover a slow shutdown, short enough that a process which plainly ignored
 /// the signal keeps its row.
 const KILL_WATCH_FOR: Duration = Duration::from_secs(5);
-
-/// How long a confirmed-dead PID is remembered, so a cached agent snapshot
-/// taken before the kill cannot resurrect its row.
-const KILLED_TOMBSTONE_FOR: Duration = Duration::from_secs(5);
 
 /// Budget for one request/response round trip. Replies are matched to
 /// requests by order, so a request that never answers would otherwise hang
@@ -401,7 +402,11 @@ impl App {
             return;
         };
         self.modal_manager.pop_modal();
-        let (title, message) = match kill_local_process(pid, signal) {
+        // The name shown in the confirmation doubles as the reuse guard: if
+        // the PID has been recycled since, the kill is refused. The "process"
+        // fallback from prompt_kill means "name unknown" — no guard possible.
+        let expected = (name != "process").then_some(name.as_str());
+        let (title, message) = match kill_local_process(pid, expected, signal) {
             Ok(()) => {
                 self.refresh_after_kill(pid);
                 (
@@ -434,7 +439,24 @@ impl App {
         // Check once right now: SIGKILL, and anything already exiting, is gone
         // by the time the confirmation is dismissed.
         self.poll_kill_watch();
-        self.procs_refresh_due_at = Some(Instant::now() + PROC_CACHE_SETTLE);
+        self.procs_refresh_due_at = Some(Instant::now() + self.proc_refresh_settle());
+    }
+
+    /// How long the post-kill forced refresh waits, and the base of the
+    /// tombstone lifetime. Scales with the user's processes interval: someone
+    /// who raised the agent's Processes TTL will have raised their client
+    /// interval to match (there is no point polling faster than the cache),
+    /// so the interval is the best client-side signal for how stale an agent
+    /// snapshot can be. Never below the default-TTL floor.
+    fn proc_refresh_settle(&self) -> Duration {
+        PROC_CACHE_SETTLE_FLOOR.max(self.procs_interval)
+    }
+
+    /// How long a confirmed-dead PID is remembered, so a cached agent snapshot
+    /// taken before the kill cannot resurrect its row. Must outlive the settle
+    /// window plus one round trip, hence settle + margin.
+    fn kill_tombstone_for(&self) -> Duration {
+        self.proc_refresh_settle() + TOMBSTONE_MARGIN
     }
 
     /// Re-check the processes we have signalled and retire the rows of any that
@@ -464,8 +486,9 @@ impl App {
             self.close_details_for_gone_process(pid);
             self.killed_gone.push((pid, now));
         }
+        let tombstone_for = self.kill_tombstone_for();
         self.killed_gone
-            .retain(|(_, at)| now.duration_since(*at) < KILLED_TOMBSTONE_FOR);
+            .retain(|(_, at)| now.duration_since(*at) < tombstone_for);
     }
 
     /// Drop rows for processes we have confirmed dead. Applied to every process
@@ -475,8 +498,9 @@ impl App {
             return;
         }
         let now = Instant::now();
+        let tombstone_for = self.kill_tombstone_for();
         self.killed_gone
-            .retain(|(_, at)| now.duration_since(*at) < KILLED_TOMBSTONE_FOR);
+            .retain(|(_, at)| now.duration_since(*at) < tombstone_for);
         let pids: Vec<u32> = self.killed_gone.iter().map(|(p, _)| *p).collect();
         for pid in pids {
             self.forget_process_row(pid);
@@ -1557,8 +1581,20 @@ impl App {
                                             // endpoint plainly works, so the PID is
                                             // the problem — close the view instead
                                             // of claiming the agent needs updating.
+                                            //
+                                            // Unless the process is still in the
+                                            // agent's own list: then this error is a
+                                            // transient (socket blip, torn frame),
+                                            // not a death — keep the view and let
+                                            // the next poll retry.
                                             if self.process_details_answered {
-                                                self.close_details_for_gone_process(pid);
+                                                let still_listed =
+                                                    self.last_metrics.as_ref().is_some_and(|m| {
+                                                        m.top_processes.iter().any(|p| p.pid == pid)
+                                                    });
+                                                if !still_listed {
+                                                    self.close_details_for_gone_process(pid);
+                                                }
                                             } else {
                                                 self.process_details_unsupported = true;
                                             }
@@ -2043,9 +2079,28 @@ mod kill_refresh_tests {
     #[test]
     fn the_forced_refresh_waits_out_the_agent_cache() {
         assert!(
-            PROC_CACHE_SETTLE >= Duration::from_millis(1_500),
+            PROC_CACHE_SETTLE_FLOOR >= Duration::from_millis(1_500),
             "agent serves Processes from a 1500ms cache by default"
         );
+    }
+
+    /// Users who raise the agent's Processes TTL raise the client interval to
+    /// match, so the settle window (and the tombstone that must outlive it)
+    /// scales with the interval instead of assuming the default TTL.
+    #[test]
+    fn settle_and_tombstone_scale_with_the_processes_interval() {
+        // The default processes interval is 2s, which already exceeds the
+        // 1.6s floor — so the default settle is the interval itself.
+        let mut app = App::new();
+        assert_eq!(app.proc_refresh_settle(), Duration::from_secs(2));
+
+        app = app.with_intervals(None, Some(10_000));
+        assert_eq!(app.proc_refresh_settle(), Duration::from_secs(10));
+        assert!(app.kill_tombstone_for() > app.proc_refresh_settle());
+
+        // A tiny interval never drops the settle below the default-TTL floor.
+        app = app.with_intervals(None, Some(200));
+        assert_eq!(app.proc_refresh_settle(), PROC_CACHE_SETTLE_FLOOR);
     }
 }
 

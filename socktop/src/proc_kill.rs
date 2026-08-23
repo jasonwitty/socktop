@@ -56,9 +56,19 @@ pub fn process_exists(pid: u32) -> bool {
 }
 
 /// Send `signal` to local process `pid`. Returns `Ok(())` on success, or an
-/// `Err` with a human-readable reason (process gone, permission denied,
-/// signal unsupported on this platform).
-pub fn kill_local_process(pid: u32, signal: KillSignal) -> Result<(), String> {
+/// `Err` with a human-readable reason (process gone, PID reused, permission
+/// denied, signal unsupported on this platform).
+///
+/// `expected_name`, when given, is compared against the process that owns the
+/// PID **right now**: the PID came from an agent snapshot and the confirmation
+/// dialog can sit open indefinitely, so by signal time the kernel may have
+/// recycled the number for an unrelated process. Both names come from the
+/// same sysinfo source, so a live, unchanged target compares equal.
+pub fn kill_local_process(
+    pid: u32,
+    expected_name: Option<&str>,
+    signal: KillSignal,
+) -> Result<(), String> {
     let spid = sysinfo::Pid::from_u32(pid);
 
     // Refresh just this one PID — we don't need a full process scan to signal it.
@@ -72,6 +82,16 @@ pub fn kill_local_process(pid: u32, signal: KillSignal) -> Result<(), String> {
     let Some(proc_) = sys.process(spid) else {
         return Err(format!("Process {pid} no longer exists"));
     };
+
+    if let Some(expected) = expected_name {
+        let current = proc_.name().to_string_lossy();
+        if current != expected {
+            return Err(format!(
+                "PID {pid} now belongs to \"{current}\", not \"{expected}\" — \
+                 not signalling. Reselect the process and try again."
+            ));
+        }
+    }
 
     match proc_.kill_with(signal.as_sysinfo()) {
         Some(true) => Ok(()),
@@ -104,7 +124,7 @@ mod tests {
             .expect("spawn sleep for the test");
         let pid = child.id();
 
-        let result = kill_local_process(pid, KillSignal::Term);
+        let result = kill_local_process(pid, Some("sleep"), KillSignal::Term);
 
         // Reap on every path before asserting, so a failing assert cannot leak a
         // 30s sleep and cannot trip clippy's zombie_processes lint.
@@ -129,12 +149,33 @@ mod tests {
         );
     }
 
+    /// The reuse guard: a live PID whose owner does not match the name the
+    /// user confirmed must NOT be signalled. This also proves the name is
+    /// populated under ProcessRefreshKind::nothing() — if it weren't, the
+    /// matching-name test above would fail instead.
+    #[test]
+    fn refuses_a_pid_owned_by_a_different_process() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+
+        let result = kill_local_process(pid, Some("firefox"), KillSignal::Term);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let err = result.expect_err("signalled a process under the wrong name");
+        assert!(err.contains("firefox") && err.contains("sleep"), "{err}");
+    }
+
     #[test]
     fn reports_a_pid_that_is_gone() {
         let mut child = Command::new("true").spawn().expect("spawn true");
         let pid = child.id();
         child.wait().expect("reap");
         // The PID is now free; signalling it must fail cleanly, not panic.
-        assert!(kill_local_process(pid, KillSignal::Term).is_err());
+        assert!(kill_local_process(pid, None, KillSignal::Term).is_err());
     }
 }
