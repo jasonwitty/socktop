@@ -1,14 +1,14 @@
 Package: socktop
-Version: 1.60.0-1
+Version: 1.60.1-1
 Architecture: armhf
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
 Installed-Size: 2776
-Depends: libc6:armhf (>= 2.39)
-Filename: pool/main/socktop_1.60.0-1_armhf.deb
-Size: 1034188
-MD5sum: 06d2e083ba6ed6b6596736a2795c31b1
-SHA1: f0a365f1f6183e0a0c4325f99a16b77ed25ff7d5
-SHA256: e740551afb7f8cd37d6daf5f9a5a09e2375e93afd36838fc7b4d36bb25a53476
+Depends: libc6:armhf (>= 2.35)
+Filename: pool/main/socktop_1.60.1-1_armhf.deb
+Size: 1032456
+MD5sum: 272285b6c374b837bd7e56311b995077
+SHA1: ea888d28feb5a7de27ed4837e3da6dbe72622569
+SHA256: 2758603e259780063f4c78e2e6a1b49614372d7e62612186585840676686f4d5
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop
@@ -19,16 +19,16 @@ Description: Remote system monitor over WebSocket, TUI like top
  interface similar to the traditional 'top' command.
 
 Package: socktop-agent
-Version: 1.60.0-1
+Version: 1.60.1-1
 Architecture: armhf
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
-Installed-Size: 3825
-Depends: libc6:armhf (>= 2.39)
-Filename: pool/main/socktop-agent_1.60.0-1_armhf.deb
-Size: 1467232
-MD5sum: 44b0f80483968344eb7a0319c085dad3
-SHA1: 87a586aaaf38cc6ca8211753aa0cb4e71a9599d4
-SHA256: 62136b519e5521ea7d32c0907f1e58edef4118f00095fe3389002dcb3a9fda0c
+Installed-Size: 3837
+Depends: libc6:armhf (>= 2.35)
+Filename: pool/main/socktop-agent_1.60.1-1_armhf.deb
+Size: 1470432
+MD5sum: 323899a035127d1294fd2f1502a11ff9
+SHA1: 7fabfb16d8d18e644d2e32e19ce2a91e760302fd
+SHA256: e59fc31b1ccf211924fd8b63da32091a313836b5e82fcf64e8ceb6f4b9fd71d4
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop

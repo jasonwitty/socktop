@@ -1,14 +1,14 @@
 Package: socktop
-Version: 1.60.0-1
+Version: 1.60.1-1
 Architecture: arm64
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
-Installed-Size: 3038
-Depends: libc6 (>= 2.39)
-Filename: pool/main/socktop_1.60.0-1_arm64.deb
-Size: 1182876
-MD5sum: 06a1a2a7123c8791a3866fff214fbd16
-SHA1: 300d7b60778d80a961f010d958ea9d5362dec2b4
-SHA256: b19e50e18ec313caf9d01e154342de9f25bbbde8f4bebc3a9c92f5c1fe1dbffe
+Installed-Size: 3006
+Depends: libc6 (>= 2.34)
+Filename: pool/main/socktop_1.60.1-1_arm64.deb
+Size: 1181820
+MD5sum: 5357e5b036edae9dc131ac7df966e7fa
+SHA1: b56c1a8bf68d74f393063e290ce73041cc0ffaf4
+SHA256: 396e88adabbccbeed41f17c6a5d7d975008b34d41293ab25ce11e40487c45cde
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop
@@ -19,16 +19,16 @@ Description: Remote system monitor over WebSocket, TUI like top
  interface similar to the traditional 'top' command.
 
 Package: socktop-agent
-Version: 1.60.0-1
+Version: 1.60.1-1
 Architecture: arm64
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
-Installed-Size: 5222
-Depends: libc6 (>= 2.39), libdrm-amdgpu1 (>= 2.4.80)
-Filename: pool/main/socktop-agent_1.60.0-1_arm64.deb
-Size: 1654048
-MD5sum: 9cd7adc0a2657b7b58a04e5d4c59060c
-SHA1: 94744ed2a5f7a3c7a69f85ab217d4dfdddcfc05e
-SHA256: 52010e81d339444dc46df1df49b14a040e2fa65e5dfb86bc37c348575dc51f61
+Installed-Size: 5174
+Depends: libc6 (>= 2.34), libdrm-amdgpu1 (>= 2.4.80)
+Filename: pool/main/socktop-agent_1.60.1-1_arm64.deb
+Size: 1654232
+MD5sum: 2c1487bbf26df1e040538a9db159d7ab
+SHA1: 57a06cc0a1f7ab13506abb4825d15d17b29d3bf7
+SHA256: 515eb310c37be516b2a2221bd0b4401bbca4a25dab0b0625b23f93fc8b71f493
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop
