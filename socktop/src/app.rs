@@ -527,9 +527,25 @@ impl App {
 
     /// Close the details view for a process that no longer exists, and drop the
     /// data collected for it.
+    ///
+    /// A parent-navigation chain can leave another details view underneath
+    /// (child → P → parent killed): the resurfacing view must resume polling,
+    /// so retarget the selection to it — the same thing SwitchToParentProcess
+    /// does on the way down. Without this the child view came back with no
+    /// selection (forget_process_row had just cleared it) and wiped data, and
+    /// the selection-gated details poll never refilled it: a frozen, orphaned
+    /// window.
     fn close_details_for_gone_process(&mut self, pid: u32) {
         if self.modal_manager.close_process_details(pid) {
             self.clear_process_details();
+            if let Some(next_pid) = self.modal_manager.topmost_process_details() {
+                self.selected_process_pid = Some(next_pid);
+                // Fire the details poll on the next tick rather than waiting
+                // out the interval.
+                self.last_process_details_poll = Instant::now()
+                    .checked_sub(self.process_details_interval)
+                    .unwrap_or_else(Instant::now);
+            }
         }
     }
 
@@ -1009,12 +1025,20 @@ impl App {
                                 continue; // Skip normal key processing
                             }
                             ModalAction::Cancel | ModalAction::Dismiss => {
-                                // If ProcessDetails modal was dismissed, clear the data to save resources
-                                if let Some(crate::ui::modal::ModalType::ProcessDetails {
-                                    ..
-                                }) = self.modal_manager.current_modal()
+                                // If a ProcessDetails view is what we landed on,
+                                // clear the stale data AND point the poll at it —
+                                // Esc-ing back from a parent view otherwise left
+                                // the selection on the parent, refilling the
+                                // child-titled view with the parent's data.
+                                if let Some(crate::ui::modal::ModalType::ProcessDetails { pid }) =
+                                    self.modal_manager.current_modal()
                                 {
+                                    let pid = *pid;
                                     self.clear_process_details();
+                                    self.selected_process_pid = Some(pid);
+                                    self.last_process_details_poll = Instant::now()
+                                        .checked_sub(self.process_details_interval)
+                                        .unwrap_or_else(Instant::now);
                                 }
                                 // Abandon any pending kill the user backed out of.
                                 self.pending_kill = None;
@@ -2101,6 +2125,47 @@ mod kill_refresh_tests {
         // A tiny interval never drops the settle below the default-TTL floor.
         app = app.with_intervals(None, Some(200));
         assert_eq!(app.proc_refresh_settle(), PROC_CACHE_SETTLE_FLOOR);
+    }
+}
+
+#[cfg(test)]
+mod parent_chain_tests {
+    use super::*;
+    use crate::ui::modal::ModalType;
+
+    /// Kill a parent reached via P-navigation: the child's view resurfaces and
+    /// must resume polling. Reported as: "I can still see the orphaned window
+    /// if I open a process, hit P, then terminate that process with t".
+    #[test]
+    fn killing_a_navigated_to_parent_retargets_the_child_view() {
+        let mut app = App::new();
+        let (child, parent) = (200u32, 100u32);
+        app.modal_manager
+            .push_modal(ModalType::ProcessDetails { pid: child });
+        app.modal_manager
+            .push_modal(ModalType::ProcessDetails { pid: parent });
+        // The kill flow stacks the "Signal sent" Info on top, and the watch
+        // usually confirms the death while it is still up.
+        app.modal_manager.push_modal(ModalType::Info {
+            title: "Signal sent".into(),
+            message: "Sent SIGTERM".into(),
+        });
+        // forget_process_row has already cleared the selection by this point.
+        app.selected_process_pid = None;
+
+        app.close_details_for_gone_process(parent);
+
+        assert_eq!(
+            app.selected_process_pid,
+            Some(child),
+            "resurfaced child view has no selection: its poll never runs and \
+             the window sits frozen"
+        );
+        assert_eq!(app.modal_manager.topmost_process_details(), Some(child));
+        assert!(
+            app.last_process_details_poll.elapsed() >= app.process_details_interval,
+            "poll should be due immediately"
+        );
     }
 }
 

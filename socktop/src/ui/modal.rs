@@ -127,6 +127,16 @@ impl ModalManager {
         true
     }
 
+    /// PID of the uppermost ProcessDetails view, looking through any
+    /// Info/Confirmation stacked above it. What the user will land on when
+    /// transient modals are dismissed.
+    pub fn topmost_process_details(&self) -> Option<u32> {
+        self.stack.iter().rev().find_map(|m| match m {
+            ModalType::ProcessDetails { pid } => Some(*pid),
+            _ => None,
+        })
+    }
+
     pub fn update_connection_error_countdown(&mut self, new_countdown: Option<u64>) {
         if let Some(ModalType::ConnectionError {
             auto_retry_countdown,
