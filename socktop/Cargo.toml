@@ -22,6 +22,9 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 unicode-width = { workspace = true }
 anyhow = { workspace = true }
+# Local process signalling only (src/proc_kill.rs). The TUI never gathers its
+# own metrics — everything on screen comes from the agent over the connector.
+sysinfo = { workspace = true }
 dirs-next = { workspace = true }
 
 [dev-dependencies]

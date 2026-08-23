@@ -1,6 +1,10 @@
 //! Modal window system for socktop TUI application
 
-use super::theme::MODAL_DIM_BG;
+use super::fit;
+use super::theme::{
+    BTN_EXIT_BG_ACTIVE, BTN_RETRY_BG_ACTIVE, MODAL_BG, MODAL_BORDER_FG, MODAL_DIM_BG, MODAL_FG,
+    MODAL_TITLE_FG,
+};
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -25,6 +29,10 @@ pub struct ModalManager {
     pub journal_scroll_max: usize,
     pub help_scroll_offset: usize,
 }
+
+/// Key hints shown under the confirmation buttons. Also sets the minimum
+/// width of that dialog — sizing from the question alone clipped this line.
+const CONFIRM_HINT: &str = "Tab ← → choose  ·  Enter run  ·  Esc cancel";
 
 impl ModalManager {
     pub fn new() -> Self {
@@ -83,6 +91,20 @@ impl ModalManager {
         }
         m
     }
+    /// Close the details view for `pid` if that is what is currently on top.
+    /// Returns whether anything was closed.
+    ///
+    /// Only the top modal, deliberately: with a parent-navigation chain, the
+    /// views underneath are other processes that may still be alive, and each
+    /// closes itself the same way once its own process goes.
+    pub fn close_process_details(&mut self, pid: u32) -> bool {
+        if matches!(self.stack.last(), Some(ModalType::ProcessDetails { pid: p }) if *p == pid) {
+            self.pop_modal();
+            return true;
+        }
+        false
+    }
+
     pub fn update_connection_error_countdown(&mut self, new_countdown: Option<u64>) {
         if let Some(ModalType::ConnectionError {
             auto_retry_countdown,
@@ -109,6 +131,16 @@ impl ModalManager {
             KeyCode::BackTab | KeyCode::Left => {
                 self.prev_button();
                 ModalAction::None
+            }
+            // Kill the process being viewed. `t` rather than `k` because `k`
+            // scrolls the thread table in this modal — and using the same key
+            // here as on the processes pane means one thing to remember.
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                if let Some(ModalType::ProcessDetails { pid }) = self.stack.last() {
+                    ModalAction::KillSelected(*pid)
+                } else {
+                    ModalAction::None
+                }
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 if matches!(self.stack.last(), Some(ModalType::ConnectionError { .. })) {
@@ -241,7 +273,16 @@ impl ModalManager {
                 ModalAction::Dismiss
             }
             (Some(ModalType::Confirmation { .. }), ModalButton::Confirm) => ModalAction::Confirm,
-            (Some(ModalType::Confirmation { .. }), ModalButton::Cancel) => ModalAction::Cancel,
+            (Some(ModalType::Confirmation { .. }), ModalButton::ConfirmForce) => {
+                ModalAction::ConfirmForce
+            }
+            (Some(ModalType::Confirmation { .. }), ModalButton::Cancel) => {
+                // Pop here so Enter-on-Cancel behaves like Esc (which pops in
+                // handle_key); the app's Cancel handler can then assume the
+                // modal is already gone.
+                self.pop_modal();
+                ModalAction::Cancel
+            }
             (Some(ModalType::Info { .. }), ModalButton::Ok) => {
                 self.pop_modal();
                 ModalAction::Dismiss
@@ -253,12 +294,29 @@ impl ModalManager {
         self.active_button = match (&self.stack.last(), &self.active_button) {
             (Some(ModalType::ConnectionError { .. }), ModalButton::Retry) => ModalButton::Exit,
             (Some(ModalType::ConnectionError { .. }), ModalButton::Exit) => ModalButton::Retry,
-            (Some(ModalType::Confirmation { .. }), ModalButton::Confirm) => ModalButton::Cancel,
+            // Confirmation cycles through three: the safe affirmative, the
+            // escalated one, then cancel.
+            (Some(ModalType::Confirmation { .. }), ModalButton::Confirm) => {
+                ModalButton::ConfirmForce
+            }
+            (Some(ModalType::Confirmation { .. }), ModalButton::ConfirmForce) => {
+                ModalButton::Cancel
+            }
             (Some(ModalType::Confirmation { .. }), ModalButton::Cancel) => ModalButton::Confirm,
             _ => self.active_button.clone(),
         };
     }
     fn prev_button(&mut self) {
+        // Confirmation has three buttons, so stepping back is not the same as
+        // stepping forward; everything else is a two-way toggle.
+        if let Some(ModalType::Confirmation { .. }) = self.stack.last() {
+            self.active_button = match self.active_button {
+                ModalButton::Confirm => ModalButton::Cancel,
+                ModalButton::ConfirmForce => ModalButton::Confirm,
+                _ => ModalButton::ConfirmForce,
+            };
+            return;
+        }
         self.next_button();
     }
 
@@ -280,6 +338,150 @@ impl ModalManager {
         );
     }
 
+    /// Wrap `text` to at most `width` columns on word boundaries, so a dialog
+    /// can be sized from its content instead of guessing.
+    fn wrap_cols(text: &str, width: u16) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_string()
+            } else {
+                format!("{current} {word}")
+            };
+            if fit::cols(&candidate) <= width || current.is_empty() {
+                current = candidate;
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
+    /// A centered box just big enough for `message` plus `footer_rows` of
+    /// buttons/hints. Never exceeds the screen, and never gets so narrow that
+    /// the title is clipped.
+    ///
+    /// `min_content_w` is the width the footer needs. Sizing from the message
+    /// alone clipped the key-hint line, which is longer than most questions.
+    fn dialog_rect(area: Rect, message: &str, footer_rows: u16, min_content_w: u16) -> Rect {
+        // 2 border columns + 2 columns of breathing room on each side.
+        const CHROME_W: u16 = 6;
+        const MAX_TEXT_W: u16 = 64;
+        const MIN_TEXT_W: u16 = 24;
+
+        let avail_text = area.width.saturating_sub(CHROME_W).max(1);
+        let text_w = fit::cols(message)
+            .min(MAX_TEXT_W)
+            .min(avail_text)
+            .max(MIN_TEXT_W.min(avail_text));
+        let lines = Self::wrap_cols(message, text_w);
+        let widest = lines
+            .iter()
+            .map(|l| fit::cols(l))
+            .max()
+            .unwrap_or(text_w)
+            .max(min_content_w.min(avail_text));
+
+        let width = (widest + CHROME_W).min(area.width);
+        // borders + blank + message + blank + footer
+        let height = (lines.len() as u16 + footer_rows + 4).min(area.height);
+        Rect {
+            x: area.x + (area.width.saturating_sub(width)) / 2,
+            y: area.y + (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        }
+    }
+
+    /// Shared chrome for the small dialogs: themed border, centered message
+    /// with real padding, and the footer row(s) returned for the caller to
+    /// fill with buttons.
+    ///
+    /// The old versions laid their content out over `area` rather than the
+    /// block's inner rect, which put the first line of text on top of the
+    /// border and pushed the buttons against the frame.
+    fn render_dialog_frame(
+        f: &mut Frame,
+        area: Rect,
+        title: &str,
+        message: &str,
+        footer_rows: u16,
+    ) -> Rect {
+        let block = Block::default()
+            .title(
+                Line::from(format!(" {title} ")).style(
+                    Style::default()
+                        .fg(MODAL_TITLE_FG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(MODAL_BORDER_FG))
+            .style(Style::default().bg(MODAL_BG));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        // Pad one column each side so text never touches the border.
+        let padded = Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(2),
+            height: inner.height,
+        };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),           // breathing room under the title
+                Constraint::Min(1),              // message
+                Constraint::Length(1),           // gap above the footer
+                Constraint::Length(footer_rows), // buttons / hints
+            ])
+            .split(padded);
+
+        f.render_widget(
+            Paragraph::new(message)
+                .style(Style::default().fg(MODAL_FG))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            rows[1],
+        );
+        rows[3]
+    }
+
+    /// One button, sized to its label and centered in `area`.
+    fn render_button(f: &mut Frame, area: Rect, label: &str, active: bool, accent: Color) {
+        let style = if active {
+            Style::default()
+                .bg(accent)
+                .fg(MODAL_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(accent)
+        };
+        let text = format!(" {label} ");
+        let w = fit::cols(&text).min(area.width);
+        let btn = Rect {
+            x: area.x + (area.width.saturating_sub(w)) / 2,
+            y: area.y,
+            width: w,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(text)
+                .style(style)
+                .alignment(Alignment::Center),
+            btn,
+        );
+    }
+
     fn render_modal_content(&mut self, f: &mut Frame, modal: &ModalType, data: ProcessModalData) {
         let area = f.area();
         // Different sizes for different modal types
@@ -296,6 +498,13 @@ impl ModalManager {
                 // Help modal uses medium size
                 self.centered_rect(70, 80, area)
             }
+            // Confirmation and Info are one-question dialogs. A fixed 70%x50%
+            // box left a short question floating in a mostly-empty pane, so
+            // these size themselves to their content instead.
+            ModalType::Confirmation { message, .. } => {
+                Self::dialog_rect(area, message, 3, fit::cols(CONFIRM_HINT))
+            }
+            ModalType::Info { message, .. } => Self::dialog_rect(area, message, 1, 16),
             _ => {
                 // Other modals use smaller size
                 self.centered_rect(70, 50, area)
@@ -340,86 +549,64 @@ impl ModalManager {
         confirm_text: &str,
         cancel_text: &str,
     ) {
-        let chunks = Layout::default()
+        // Three buttons + a key hint line.
+        let footer = Self::render_dialog_frame(f, area, title, message, 3);
+        let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(area);
-        let block = Block::default()
-            .title(format!(" {title} "))
-            .borders(Borders::ALL)
-            .style(Style::default().bg(Color::Black));
-        f.render_widget(block, area);
-        f.render_widget(
-            Paragraph::new(message)
-                .style(Style::default().fg(Color::White))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true }),
-            chunks[0],
-        );
-        let buttons = Layout::default()
+            .constraints([
+                Constraint::Length(1), // buttons
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // key hints
+            ])
+            .split(footer);
+
+        let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[1]);
-        let confirm_style = if self.active_button == ModalButton::Confirm {
-            Style::default()
-                .bg(Color::Green)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Green)
-        };
-        let cancel_style = if self.active_button == ModalButton::Cancel {
-            Style::default()
-                .bg(Color::Red)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Red)
-        };
-        f.render_widget(
-            Paragraph::new(confirm_text)
-                .style(confirm_style)
-                .alignment(Alignment::Center),
-            buttons[0],
+            .constraints([
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+                Constraint::Ratio(1, 3),
+            ])
+            .split(rows[0]);
+
+        Self::render_button(
+            f,
+            cols[0],
+            confirm_text,
+            self.active_button == ModalButton::Confirm,
+            BTN_RETRY_BG_ACTIVE,
         );
+        Self::render_button(
+            f,
+            cols[1],
+            "Force kill",
+            self.active_button == ModalButton::ConfirmForce,
+            MODAL_TITLE_FG,
+        );
+        Self::render_button(
+            f,
+            cols[2],
+            cancel_text,
+            self.active_button == ModalButton::Cancel,
+            BTN_EXIT_BG_ACTIVE,
+        );
+
         f.render_widget(
-            Paragraph::new(cancel_text)
-                .style(cancel_style)
+            Paragraph::new(CONFIRM_HINT)
+                .style(Style::default().fg(MODAL_FG).add_modifier(Modifier::DIM))
                 .alignment(Alignment::Center),
-            buttons[1],
+            rows[2],
         );
     }
 
     fn render_info(&self, f: &mut Frame, area: Rect, title: &str, message: &str) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(area);
-        let block = Block::default()
-            .title(format!(" {title} "))
-            .borders(Borders::ALL)
-            .style(Style::default().bg(Color::Black));
-        f.render_widget(block, area);
-        f.render_widget(
-            Paragraph::new(message)
-                .style(Style::default().fg(Color::White))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true }),
-            chunks[0],
-        );
-        let ok_style = if self.active_button == ModalButton::Ok {
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Blue)
-        };
-        f.render_widget(
-            Paragraph::new("[ Enter ] OK")
-                .style(ok_style)
-                .alignment(Alignment::Center),
-            chunks[1],
+        let footer = Self::render_dialog_frame(f, area, title, message, 1);
+        Self::render_button(
+            f,
+            footer,
+            "Enter — OK",
+            self.active_button == ModalButton::Ok,
+            BTN_RETRY_BG_ACTIVE,
         );
     }
 
@@ -505,6 +692,9 @@ impl ModalManager {
             "  ↑/↓ ............ Select/navigate processes",
             "  Enter .......... Open Process Details",
             "  x/X ............ Clear selection",
+            "  t .............. Signal selected process — local agent only",
+            "                   (also works inside Process Details; the prompt",
+            "                    offers Terminate/SIGTERM or Force kill/SIGKILL)",
             "  Click header ... Sort by column (CPU/Mem)",
             "  Click row ...... Select process",
             "",
@@ -630,5 +820,243 @@ impl ModalManager {
                 Constraint::Percentage((100 - percent_x) / 2),
             ])
             .split(vert[1])[1]
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+
+    fn confirm_modal() -> ModalManager {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::Confirmation {
+            title: "Confirm signal".into(),
+            message: "Send a signal to bash (PID 42)?".into(),
+            confirm_text: "Terminate".into(),
+            cancel_text: "Cancel".into(),
+        });
+        m
+    }
+
+    /// The safe option is focused first, so a reflexive Enter terminates rather
+    /// than force-kills.
+    #[test]
+    fn opens_on_the_safe_option() {
+        let mut m = confirm_modal();
+        assert_eq!(m.active_button, ModalButton::Confirm);
+        assert_eq!(m.handle_key(KeyCode::Enter), ModalAction::Confirm);
+    }
+
+    #[test]
+    fn tab_cycles_all_three_buttons_forward() {
+        let mut m = confirm_modal();
+        m.handle_key(KeyCode::Tab);
+        assert_eq!(m.active_button, ModalButton::ConfirmForce);
+        m.handle_key(KeyCode::Tab);
+        assert_eq!(m.active_button, ModalButton::Cancel);
+        m.handle_key(KeyCode::Tab);
+        assert_eq!(m.active_button, ModalButton::Confirm);
+    }
+
+    /// With three buttons, back is not the same as forward — the old
+    /// prev_button just called next_button, which only worked for two.
+    #[test]
+    fn shift_tab_cycles_backward() {
+        let mut m = confirm_modal();
+        m.handle_key(KeyCode::BackTab);
+        assert_eq!(m.active_button, ModalButton::Cancel);
+        m.handle_key(KeyCode::BackTab);
+        assert_eq!(m.active_button, ModalButton::ConfirmForce);
+        m.handle_key(KeyCode::BackTab);
+        assert_eq!(m.active_button, ModalButton::Confirm);
+    }
+
+    #[test]
+    fn force_kill_reports_its_own_action() {
+        let mut m = confirm_modal();
+        m.handle_key(KeyCode::Tab);
+        assert_eq!(m.handle_key(KeyCode::Enter), ModalAction::ConfirmForce);
+    }
+
+    #[test]
+    fn escape_cancels_and_closes() {
+        let mut m = confirm_modal();
+        assert_eq!(m.handle_key(KeyCode::Esc), ModalAction::Cancel);
+        assert!(!m.is_active());
+    }
+
+    /// Enter on Cancel must behave like Esc, including closing the modal.
+    #[test]
+    fn enter_on_cancel_closes_too() {
+        let mut m = confirm_modal();
+        m.handle_key(KeyCode::Tab);
+        m.handle_key(KeyCode::Tab);
+        assert_eq!(m.handle_key(KeyCode::Enter), ModalAction::Cancel);
+        assert!(!m.is_active());
+    }
+
+    /// `t` inside process details asks the app to raise the kill prompt for the
+    /// process being viewed — not for whatever is selected in the list behind it.
+    #[test]
+    fn t_in_process_details_targets_that_pid() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 4242 });
+        assert_eq!(
+            m.handle_key(KeyCode::Char('t')),
+            ModalAction::KillSelected(4242)
+        );
+    }
+
+    /// `k` still scrolls the thread table, which is why `t` is the kill key.
+    #[test]
+    fn k_in_process_details_still_scrolls() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 1 });
+        m.thread_scroll_max = 5;
+        m.handle_key(KeyCode::Char('j'));
+        assert_eq!(m.thread_scroll_offset, 1);
+        assert_eq!(m.handle_key(KeyCode::Char('k')), ModalAction::Handled);
+        assert_eq!(m.thread_scroll_offset, 0);
+    }
+
+    #[test]
+    fn t_elsewhere_is_not_a_kill() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::Help);
+        assert_eq!(m.handle_key(KeyCode::Char('t')), ModalAction::None);
+    }
+
+    /// A one-line question must not be handed a half-screen box.
+    #[test]
+    fn dialog_is_sized_to_its_content() {
+        let screen = Rect::new(0, 0, 120, 40);
+        let r = ModalManager::dialog_rect(
+            screen,
+            "Send a signal to bash (PID 42)?",
+            3,
+            fit::cols(CONFIRM_HINT),
+        );
+        assert!(r.width < screen.width, "dialog took the full width");
+        assert!(r.height <= 12, "dialog was {} rows tall", r.height);
+        assert!(r.height >= 7, "dialog too short to hold its own footer");
+        // Centered to within the rounding of integer division.
+        let center_delta = (r.x + r.width / 2) as i32 - (screen.width / 2) as i32;
+        assert!(center_delta.abs() <= 1, "off-center by {center_delta}");
+    }
+
+    #[test]
+    fn dialog_never_exceeds_a_small_screen() {
+        let screen = Rect::new(0, 0, 20, 8);
+        let long = "a".repeat(400);
+        let r = ModalManager::dialog_rect(screen, &long, 3, fit::cols(CONFIRM_HINT));
+        assert!(r.width <= screen.width && r.height <= screen.height);
+    }
+}
+
+#[cfg(test)]
+mod button_style_tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// The focused button must be the highlighted one — the whole point of the
+    /// three-button layout is that you can see which action Enter will run.
+    #[test]
+    fn focus_moves_the_highlight() {
+        let msg = "Send a signal to bash (PID 42)?";
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::Confirmation {
+            title: "Confirm signal".into(),
+            message: msg.into(),
+            confirm_text: "Terminate".into(),
+            cancel_text: "Cancel".into(),
+        });
+
+        // Background colors present on the button row, per focused button.
+        let bgs = |m: &ModalManager| -> Vec<Color> {
+            let screen = Rect::new(0, 0, 100, 30);
+            let area = ModalManager::dialog_rect(screen, msg, 3, fit::cols(CONFIRM_HINT));
+            let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            t.draw(|f| {
+                m.render_confirmation(f, area, "Confirm signal", msg, "Terminate", "Cancel")
+            })
+            .unwrap();
+            let buf = t.backend().buffer();
+            // Buttons sit on the first footer row: title, gap, message, gap.
+            let row = area.y + 4;
+            (area.x..area.x + area.width)
+                .map(|x| buf[(x, row)].bg)
+                .collect()
+        };
+
+        let terminate_focused = bgs(&m);
+        assert!(
+            terminate_focused.contains(&BTN_RETRY_BG_ACTIVE),
+            "Terminate should be highlighted when focused"
+        );
+        assert!(
+            !terminate_focused.contains(&BTN_EXIT_BG_ACTIVE),
+            "Cancel must not be highlighted while Terminate has focus"
+        );
+
+        m.handle_key(KeyCode::Tab);
+        m.handle_key(KeyCode::Tab);
+        let cancel_focused = bgs(&m);
+        assert!(
+            cancel_focused.contains(&BTN_EXIT_BG_ACTIVE),
+            "Cancel should be highlighted after two Tabs"
+        );
+        assert!(
+            !cancel_focused.contains(&BTN_RETRY_BG_ACTIVE),
+            "Terminate must not stay highlighted"
+        );
+    }
+}
+
+#[cfg(test)]
+mod close_details_tests {
+    use super::*;
+
+    #[test]
+    fn closes_the_view_for_that_pid() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 4242 });
+        assert!(m.close_process_details(4242));
+        assert!(!m.is_active());
+    }
+
+    #[test]
+    fn leaves_a_different_pid_alone() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 4242 });
+        assert!(!m.close_process_details(1));
+        assert!(m.is_active());
+    }
+
+    /// Walking up to a parent stacks details views. A child dying must close
+    /// only its own view and reveal the parent's, which is still valid.
+    #[test]
+    fn only_closes_the_top_of_a_parent_chain() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 100 }); // parent
+        m.push_modal(ModalType::ProcessDetails { pid: 200 }); // child, on top
+
+        assert!(!m.close_process_details(100), "closed a view below the top");
+        assert!(m.close_process_details(200));
+        assert!(matches!(
+            m.current_modal(),
+            Some(ModalType::ProcessDetails { pid: 100 })
+        ));
+    }
+
+    #[test]
+    fn does_nothing_when_another_modal_is_on_top() {
+        let mut m = ModalManager::new();
+        m.push_modal(ModalType::ProcessDetails { pid: 7 });
+        m.push_modal(ModalType::Info {
+            title: "t".into(),
+            message: "m".into(),
+        });
+        assert!(!m.close_process_details(7));
     }
 }

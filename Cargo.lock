@@ -2423,6 +2423,7 @@ dependencies = [
  "serde",
  "serde_json",
  "socktop_connector",
+ "sysinfo",
  "tempfile",
  "tokio",
  "unicode-width",

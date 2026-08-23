@@ -95,7 +95,7 @@ impl ModalManager {
         }
 
         // Help line
-        let help_text = vec![Line::from(vec![
+        let mut help_text = vec![Line::from(vec![
             Span::styled(
                 "X ",
                 Style::default()
@@ -128,6 +128,23 @@ impl ModalManager {
             ),
             Span::styled("journal", Style::default().add_modifier(Modifier::DIM)),
         ])];
+
+        // Kill from here too — same key as the processes pane, and only shown
+        // when the agent is local, since that is the only case where it works.
+        if data.is_local
+            && let Some(line) = help_text.first_mut()
+        {
+            line.spans.push(Span::styled(
+                "  t ",
+                Style::default()
+                    .fg(PROCESS_DETAILS_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            line.spans.push(Span::styled(
+                "kill",
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
 
         let help = Paragraph::new(Text::from(help_text))
             .alignment(Alignment::Center)

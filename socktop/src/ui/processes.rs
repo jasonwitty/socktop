@@ -5,13 +5,14 @@ use ratatui::style::Modifier;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
 };
 use std::cmp::Ordering;
 
 use crate::types::Metrics;
 use crate::ui::cpu::{per_core_clamp, per_core_handle_scrollbar_mouse};
+use crate::ui::fit;
 use crate::ui::theme::{
     PROCESS_SELECTION_BG, PROCESS_SELECTION_FG, PROCESS_TOOLTIP_BG, PROCESS_TOOLTIP_FG, SB_ARROW,
     SB_THUMB, SB_TRACK,
@@ -86,6 +87,9 @@ pub struct ProcessDisplayParams<'a> {
     /// Peak cpu_usage from the most recent cache build; used to bold the
     /// busiest process. -1.0 if no cache.
     pub peak_cpu: f32,
+    /// Agent is on this machine, so the `t` kill hint applies. Without it the
+    /// hint would advertise a key that deliberately does nothing.
+    pub is_local: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -449,16 +453,60 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
             format!("PID {selected_pid}")
         };
 
-        let tooltip_text = format!("{process_info} | Enter for details • X to unselect");
-        let tooltip_width = tooltip_text.len() as u16 + 2; // Add padding
-        let tooltip_height = 3;
+        // Key hints, built as spans so the keys read as keys. `t` only appears
+        // for a local agent, since that is the only case where it does anything.
+        let key = Style::default()
+            .fg(PROCESS_TOOLTIP_FG)
+            .add_modifier(Modifier::BOLD);
+        let label = Style::default().fg(PROCESS_TOOLTIP_FG);
+        let mut hints: Vec<Span> = vec![
+            Span::styled("⏎", key),
+            Span::styled(" details", label),
+            Span::styled("  ·  ", label),
+        ];
+        if params.is_local {
+            hints.push(Span::styled("t", key));
+            hints.push(Span::styled(" kill", label));
+            hints.push(Span::styled("  ·  ", label));
+        }
+        hints.push(Span::styled("x", key));
+        hints.push(Span::styled(" unselect", label));
 
-        // Position tooltip at bottom-right of the processes area
-        if area.width > tooltip_width + 2 && area.height > tooltip_height + 1 {
+        let hints_w: u16 = hints.iter().map(|s| fit::cols(&s.content)).sum();
+        // One row, borders on both sides, a space of padding each side.
+        let tooltip_height = 3;
+        let max_w = area.width.saturating_sub(2);
+        if max_w > hints_w + 6 && area.height > tooltip_height + 1 {
+            // The process name is the elastic part: truncate it so the hint
+            // always fits. The old version sized the box from the full string
+            // and skipped rendering entirely when a long process name made it
+            // wider than the pane — so the hint silently vanished exactly when
+            // a long-named process was selected.
+            let room_for_info = max_w - hints_w - 6;
+            let info = fit::truncate_cols(&process_info, room_for_info);
+            let mut spans: Vec<Span> = vec![
+                Span::styled(" ", label),
+                Span::styled(
+                    info.clone(),
+                    Style::default()
+                        .fg(PROCESS_TOOLTIP_FG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  │  ", label),
+            ];
+            spans.extend(hints);
+            spans.push(Span::styled(" ", label));
+
+            let width = spans
+                .iter()
+                .map(|s| fit::cols(&s.content))
+                .sum::<u16>()
+                .saturating_add(2)
+                .min(area.width);
             let tooltip_area = Rect {
-                x: area.x + area.width.saturating_sub(tooltip_width + 1),
+                x: area.x + area.width.saturating_sub(width + 1),
                 y: area.y + area.height.saturating_sub(tooltip_height + 1),
-                width: tooltip_width,
+                width,
                 height: tooltip_height,
             };
 
@@ -468,11 +516,10 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
                     .fg(PROCESS_TOOLTIP_FG),
             );
 
-            let tooltip_paragraph = Paragraph::new(tooltip_text)
-                .block(tooltip_block)
-                .wrap(ratatui::widgets::Wrap { trim: true });
-
-            f.render_widget(tooltip_paragraph, tooltip_area);
+            f.render_widget(
+                Paragraph::new(Line::from(spans)).block(tooltip_block),
+                tooltip_area,
+            );
         }
     }
 
@@ -905,6 +952,7 @@ mod click_tests {
                         filtered_indices: &idxs,
                         cached_rows: &cache,
                         peak_cpu: peak,
+                        is_local: false,
                     },
                 )
             })
@@ -982,5 +1030,112 @@ mod click_tests {
                 "width {width}: no Name column in header {row:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use socktop_connector::{Metrics, ProcessInfo};
+
+    fn metrics(name: &str) -> Metrics {
+        Metrics {
+            sampled_at_ms: None,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 32_000_000_000,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![ProcessInfo {
+                pid: 4242,
+                name: name.into(),
+                cpu_usage: 1.5,
+                mem_bytes: 1_000_000,
+            }],
+            gpus: None,
+            process_count: Some(1),
+        }
+    }
+
+    /// Render the pane with a selection and return the whole buffer as text.
+    fn rendered(name: &str, width: u16, is_local: bool) -> String {
+        let m = metrics(name);
+        let mut cache = Vec::new();
+        let peak = rebuild_row_cache(&m, &mut cache);
+        let idxs = [0usize];
+        let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                draw_top_processes(
+                    f,
+                    Rect::new(0, 0, width, 12),
+                    ProcessDisplayParams {
+                        metrics: Some(&m),
+                        scroll_offset: 0,
+                        sort_by: ProcSortBy::CpuDesc,
+                        selected_process_pid: Some(4242),
+                        selected_process_index: Some(0),
+                        search_query: "",
+                        search_active: false,
+                        filtered_indices: &idxs,
+                        cached_rows: &cache,
+                        peak_cpu: peak,
+                        is_local,
+                    },
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..12 {
+            for x in 0..width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn hint_offers_kill_for_a_local_agent() {
+        let out = rendered("some-process", 80, true);
+        assert!(out.contains("details"), "no hint rendered at all:\n{out}");
+        assert!(
+            out.contains("kill"),
+            "local agent should offer kill:\n{out}"
+        );
+        assert!(out.contains("unselect"));
+    }
+
+    /// The key does nothing for a remote agent, so advertising it would be a lie.
+    #[test]
+    fn hint_omits_kill_for_a_remote_agent() {
+        let out = rendered("some-process", 80, false);
+        assert!(out.contains("details"), "no hint rendered at all:\n{out}");
+        assert!(
+            !out.contains("kill"),
+            "remote agent must not offer kill:\n{out}"
+        );
+    }
+
+    /// Regression: the hint used to be sized from the full label including the
+    /// process name, and was skipped entirely when that made it wider than the
+    /// pane — so it vanished exactly when a long-named process was selected.
+    #[test]
+    fn hint_survives_a_very_long_process_name() {
+        let long = "/usr/lib/firefox-esr/firefox-esr-with-a-really-long-suffix";
+        let out = rendered(long, 80, true);
+        assert!(
+            out.contains("details") && out.contains("kill"),
+            "hint disappeared for a long process name:\n{out}"
+        );
     }
 }

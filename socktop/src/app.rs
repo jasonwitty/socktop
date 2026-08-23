@@ -20,6 +20,7 @@ use ratatui::{
 use tokio::time::{sleep, timeout};
 
 use crate::history::{PerCoreHistory, push_capped};
+use crate::proc_kill::{KillSignal, kill_local_process};
 use crate::retry::{RetryTiming, compute_retry_timing};
 use crate::types::Metrics;
 use crate::ui::cpu::{
@@ -50,6 +51,20 @@ use socktop_connector::{
 // Constants for minimum intervals to ensure reasonable performance
 const MIN_METRICS_INTERVAL_MS: u64 = 100;
 const MIN_PROCESSES_INTERVAL_MS: u64 = 200;
+
+/// How long to wait before forcing a process-list refresh after a kill. Just
+/// past the agent's default `Processes` cache TTL of 1500ms, so the answer
+/// reflects the kill instead of the cached snapshot taken before it.
+const PROC_CACHE_SETTLE: Duration = Duration::from_millis(1_600);
+
+/// How long to keep re-checking a signalled process for its exit. Long enough
+/// to cover a slow shutdown, short enough that a process which plainly ignored
+/// the signal keeps its row.
+const KILL_WATCH_FOR: Duration = Duration::from_secs(5);
+
+/// How long a confirmed-dead PID is remembered, so a cached agent snapshot
+/// taken before the kill cannot resurrect its row.
+const KILLED_TOMBSTONE_FOR: Duration = Duration::from_secs(5);
 
 /// Budget for one request/response round trip. Replies are matched to
 /// requests by order, so a request that never answers would otherwise hang
@@ -136,6 +151,15 @@ pub struct App {
     procs_row_peak_cpu: f32,
 
     last_procs_poll: Instant,
+    /// When set, the next metrics tick polls processes regardless of the
+    /// regular cadence. Used after a kill — see refresh_after_kill.
+    procs_refresh_due_at: Option<Instant>,
+    /// PIDs we have signalled, with the instant we stop watching for their
+    /// exit. Re-checked each metrics tick — see poll_kill_watch.
+    kill_watch: Vec<(u32, Instant)>,
+    /// PIDs confirmed gone after a signal, kept briefly so the agent's cached
+    /// process list cannot put them back on screen.
+    killed_gone: Vec<(u32, Instant)>,
     last_disks_poll: Instant,
     procs_interval: Duration,
     disks_interval: Duration,
@@ -153,6 +177,10 @@ pub struct App {
     last_io_write_bytes: Option<u64>,            // Previous write bytes for delta calculation
     pub max_process_mem_bytes: u64, // Maximum memory usage observed for current process
     pub process_details_unsupported: bool, // Track if agent doesn't support process details
+    /// The agent has successfully answered at least one details request this
+    /// session. Distinguishes "this agent is too old" from "that process is
+    /// gone", which arrive over the wire as the same error.
+    process_details_answered: bool,
     last_process_details_poll: Instant,
     last_journal_poll: Instant,
     process_details_interval: Duration,
@@ -165,6 +193,13 @@ pub struct App {
     // Security / status flags
     pub is_tls: bool,
     pub has_token: bool,
+    // Whether the connected agent is on this machine. Gates the local
+    // process-kill feature (t = SIGTERM, k = SIGKILL).
+    pub is_local: bool,
+    // Pending kill awaiting confirmation: (pid, process name). Which signal is
+    // sent depends on the button chosen in the confirmation modal, so it isn't
+    // decided until then.
+    pending_kill: Option<(u32, String)>,
 
     // --compact: pin the compact layout regardless of window size. Without it the
     // layout switches on its own once the window is too short for the Disks pane.
@@ -222,6 +257,9 @@ impl App {
             procs_filter_dirty: true,
             procs_row_cache: Vec::new(),
             procs_row_peak_cpu: 0.0,
+            procs_refresh_due_at: None,
+            kill_watch: Vec::new(),
+            killed_gone: Vec::new(),
             last_procs_poll: Instant::now()
                 .checked_sub(Duration::from_secs(2))
                 .unwrap_or_else(Instant::now), // trigger immediately on first loop
@@ -242,6 +280,7 @@ impl App {
             last_io_write_bytes: None,
             max_process_mem_bytes: 0,
             process_details_unsupported: false,
+            process_details_answered: false,
             last_process_details_poll: Instant::now()
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now),
@@ -255,6 +294,8 @@ impl App {
             verify_hostname: false,
             is_tls: false,
             has_token: false,
+            is_local: false,
+            pending_kill: None,
             force_compact: false,
             header_title: String::new(),
             header_intervals_text: String::new(),
@@ -304,6 +345,193 @@ impl App {
         self.is_tls = is_tls;
         self.has_token = has_token;
         self
+    }
+
+    /// Enable the local process-kill feature. Only set true when the agent has
+    /// been verified to be on this machine (see [`crate::local`]).
+    pub fn with_local(mut self, is_local: bool) -> Self {
+        self.is_local = is_local;
+        self
+    }
+
+    /// Look up the display name of a process by PID. Prefers the details
+    /// payload, which is the only source that has a name for a process not in
+    /// the top-N list — e.g. after walking up to a parent from the details
+    /// modal.
+    fn process_name_for_pid(&self, pid: u32) -> Option<String> {
+        if let Some(details) = self
+            .process_details
+            .as_ref()
+            .filter(|d| d.process.pid == pid)
+        {
+            return Some(details.process.name.clone());
+        }
+        self.last_metrics
+            .as_ref()?
+            .top_processes
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| p.name.clone())
+    }
+
+    /// Raise the kill confirmation for `pid`. No-op unless the agent is on this
+    /// machine — the same gate the keybinding uses, repeated here because this
+    /// is also reachable from the details modal.
+    fn prompt_kill(&mut self, pid: u32) {
+        if !self.is_local {
+            return;
+        }
+        let name = self
+            .process_name_for_pid(pid)
+            .unwrap_or_else(|| "process".to_string());
+        self.modal_manager.push_modal(ModalType::Confirmation {
+            title: "Confirm signal".to_string(),
+            message: format!("Send a signal to {name} (PID {pid})?"),
+            confirm_text: "Terminate".to_string(),
+            cancel_text: "Cancel".to_string(),
+        });
+        self.pending_kill = Some((pid, name));
+    }
+
+    /// Signal the process the confirmation was raised for, then report the
+    /// outcome. Pops the confirmation first so the result lands on top of
+    /// whatever was underneath it (the process list, or the details modal).
+    fn run_pending_kill(&mut self, signal: KillSignal) {
+        let Some((pid, name)) = self.pending_kill.take() else {
+            return;
+        };
+        self.modal_manager.pop_modal();
+        let (title, message) = match kill_local_process(pid, signal) {
+            Ok(()) => {
+                self.refresh_after_kill(pid);
+                (
+                    "Signal sent".to_string(),
+                    format!("Sent {} to {name} (PID {pid}).", signal.label()),
+                )
+            }
+            Err(e) => ("Signal failed".to_string(), e),
+        };
+        self.modal_manager
+            .push_modal(ModalType::Info { title, message });
+    }
+
+    /// Bring the process list back in step with reality after a signal.
+    ///
+    /// A single check at signal time is not enough, which is what the first
+    /// version got wrong: SIGTERM is a *request*, so the process is usually
+    /// still alive for the few hundred milliseconds it takes to wind down. The
+    /// row therefore stayed put, and the list looked like the kill had done
+    /// nothing.
+    ///
+    /// So the PID goes on a watch list, re-checked every metrics tick until it
+    /// exits (or the watch expires). Confirmed-gone PIDs are also remembered
+    /// briefly — see `killed_gone` — because the agent serves `Processes` from
+    /// a 1500ms cache and would otherwise hand back a snapshot taken before
+    /// the kill and put the row straight back.
+    fn refresh_after_kill(&mut self, pid: u32) {
+        self.kill_watch.retain(|(p, _)| *p != pid);
+        self.kill_watch.push((pid, Instant::now() + KILL_WATCH_FOR));
+        // Check once right now: SIGKILL, and anything already exiting, is gone
+        // by the time the confirmation is dismissed.
+        self.poll_kill_watch();
+        self.procs_refresh_due_at = Some(Instant::now() + PROC_CACHE_SETTLE);
+    }
+
+    /// Re-check the processes we have signalled and retire the rows of any that
+    /// have since exited. Cheap: one `/proc` lookup per watched PID, and the
+    /// list is almost always empty.
+    fn poll_kill_watch(&mut self) {
+        if self.kill_watch.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut gone = Vec::new();
+        self.kill_watch.retain(|(pid, deadline)| {
+            if !crate::proc_kill::process_exists(*pid) {
+                gone.push(*pid);
+                return false;
+            }
+            // Still alive. Keep watching until the deadline — a process that
+            // ignores the signal outright should keep its row.
+            now < *deadline
+        });
+        for pid in gone {
+            self.forget_process_row(pid);
+            // Nothing left to show details for. Also matters mechanically: the
+            // details poll keys off the selection, which forget_process_row
+            // just cleared, so leaving the modal open would freeze it on the
+            // dead process's last sample.
+            self.close_details_for_gone_process(pid);
+            self.killed_gone.push((pid, now));
+        }
+        self.killed_gone
+            .retain(|(_, at)| now.duration_since(*at) < KILLED_TOMBSTONE_FOR);
+    }
+
+    /// Drop rows for processes we have confirmed dead. Applied to every process
+    /// list the agent sends, because its cached snapshot can predate the kill.
+    fn drop_tombstoned_rows(&mut self) {
+        if self.killed_gone.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        self.killed_gone
+            .retain(|(_, at)| now.duration_since(*at) < KILLED_TOMBSTONE_FOR);
+        let pids: Vec<u32> = self.killed_gone.iter().map(|(p, _)| *p).collect();
+        for pid in pids {
+            self.forget_process_row(pid);
+        }
+    }
+
+    /// Give up a selection whose process is no longer in the list. `Processes`
+    /// carries every process, not a top-N window, so a PID that is absent has
+    /// genuinely gone — and a selection pointing at it means the hint offers to
+    /// kill a corpse and `t` reports "no longer exists".
+    fn drop_vanished_selection(&mut self) {
+        let Some(pid) = self.selected_process_pid else {
+            return;
+        };
+        let present = self
+            .last_metrics
+            .as_ref()
+            .is_some_and(|m| m.top_processes.iter().any(|p| p.pid == pid));
+        if !present {
+            self.selected_process_pid = None;
+            self.selected_process_index = None;
+        }
+    }
+
+    /// Close the details view for a process that no longer exists, and drop the
+    /// data collected for it.
+    fn close_details_for_gone_process(&mut self, pid: u32) {
+        if self.modal_manager.close_process_details(pid) {
+            self.clear_process_details();
+        }
+    }
+
+    /// Drop a process from the cached view without waiting for the agent, and
+    /// give up any selection pointing at it — a hint offering to kill a process
+    /// that no longer exists is worse than no hint.
+    fn forget_process_row(&mut self, pid: u32) {
+        let Some(m) = self.last_metrics.as_mut() else {
+            return;
+        };
+        let before = m.top_processes.len();
+        m.top_processes.retain(|p| p.pid != pid);
+        if m.top_processes.len() == before {
+            return; // wasn't on screen; nothing to reconcile
+        }
+        // Keep the header's "(N total)" honest until the next real poll.
+        m.process_count = m.process_count.map(|c| c.saturating_sub(1));
+        if self.selected_process_pid == Some(pid) {
+            self.selected_process_pid = None;
+            self.selected_process_index = None;
+        }
+        self.invalidate_procs_filter();
+        if let Some(mm) = self.last_metrics.as_ref() {
+            self.procs_row_peak_cpu =
+                crate::ui::processes::rebuild_row_cache(mm, &mut self.procs_row_cache);
+        }
     }
 
     /// Show a connection error modal
@@ -764,11 +992,32 @@ impl App {
                                 {
                                     self.clear_process_details();
                                 }
+                                // Abandon any pending kill the user backed out of.
+                                self.pending_kill = None;
                                 // Modal was dismissed, skip normal key processing
                                 continue;
                             }
                             ModalAction::Confirm => {
-                                // Handle confirmation action here if needed in the future
+                                // The only confirmation in the app is the
+                                // process-kill prompt; Confirm is the polite
+                                // signal, ConfirmForce the forceful one.
+                                if self.pending_kill.is_some() {
+                                    self.run_pending_kill(KillSignal::Term);
+                                    continue;
+                                }
+                            }
+                            ModalAction::ConfirmForce => {
+                                if self.pending_kill.is_some() {
+                                    self.run_pending_kill(KillSignal::Kill);
+                                    continue;
+                                }
+                            }
+                            ModalAction::KillSelected(pid) => {
+                                // `t` from inside the details modal. The
+                                // confirmation stacks on top of it, so
+                                // cancelling returns to the details view.
+                                self.prompt_kill(pid);
+                                continue;
                             }
                             ModalAction::SwitchToParentProcess(_current_pid) => {
                                 // Get parent PID from current process details
@@ -878,6 +1127,20 @@ impl App {
                     // Show Help modal on 'h' or 'H'
                     if matches!(k.code, KeyCode::Char('h') | KeyCode::Char('H')) {
                         self.modal_manager.push_modal(ModalType::Help);
+                    }
+
+                    // Kill the selected process — local agents only. `t` is the
+                    // one kill key everywhere: `k` scrolls the thread table in
+                    // the details modal so it could not be reused there, and one
+                    // key for both entry points is one thing to remember.
+                    // SIGTERM vs SIGKILL is chosen in the confirmation modal.
+                    if self.is_local
+                        && !self.modal_manager.is_active()
+                        && matches!(k.code, KeyCode::Char('t') | KeyCode::Char('T'))
+                        && let Some(pid) = self.selected_process_pid
+                    {
+                        self.prompt_kill(pid);
+                        continue;
                     }
 
                     // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
@@ -1117,8 +1380,21 @@ impl App {
                         self.consecutive_request_timeouts = 0;
                         self.update_with_metrics(m);
 
-                        // Only poll processes every 2s
-                        if self.last_procs_poll.elapsed() >= self.procs_interval {
+                        // A process signalled a moment ago may have exited
+                        // since. Checked here, on every tick, so its row goes
+                        // as soon as it is actually gone rather than at the
+                        // next full process poll.
+                        self.poll_kill_watch();
+
+                        // Only poll processes every 2s — unless a kill asked for
+                        // a refresh, which jumps the queue.
+                        let forced = self
+                            .procs_refresh_due_at
+                            .is_some_and(|due| Instant::now() >= due);
+                        if forced || self.last_procs_poll.elapsed() >= self.procs_interval {
+                            if forced {
+                                self.procs_refresh_due_at = None;
+                            }
                             let mut updated = false;
                             match timeout(REQUEST_TIMEOUT, ws.request(AgentRequest::Processes))
                                 .await
@@ -1148,6 +1424,14 @@ impl App {
                                             &mut self.procs_row_cache,
                                         );
                                 }
+                                // The agent's snapshot can predate a kill by up
+                                // to its cache TTL, so strip anything we already
+                                // know is gone before it reaches the screen.
+                                self.drop_tombstoned_rows();
+                                // And a selection whose process is no longer in
+                                // the list would otherwise still be the target
+                                // of `t`.
+                                self.drop_vanished_selection();
                             }
                             self.last_procs_poll = Instant::now();
                         }
@@ -1252,11 +1536,32 @@ impl App {
 
                                             self.process_details = Some(details);
                                             self.process_details_unsupported = false;
+                                            // This agent demonstrably answers
+                                            // details requests, which is what
+                                            // lets the error arm below read a
+                                            // later failure as "that process is
+                                            // gone" rather than "old agent".
+                                            self.process_details_answered = true;
                                         }
                                         Ok(Err(_)) => {
-                                            // Agent responded with an error: endpoint
-                                            // not supported.
-                                            self.process_details_unsupported = true;
+                                            // An error reply means one of two very
+                                            // different things, and the wire cannot
+                                            // tell them apart: the agent lacks the
+                                            // endpoint, or this PID is gone (the
+                                            // agent sends {"error":"Process N not
+                                            // found"}, which fails to deserialize
+                                            // and arrives here identically).
+                                            //
+                                            // If the agent has already answered a
+                                            // details request this session, the
+                                            // endpoint plainly works, so the PID is
+                                            // the problem — close the view instead
+                                            // of claiming the agent needs updating.
+                                            if self.process_details_answered {
+                                                self.close_details_for_gone_process(pid);
+                                            } else {
+                                                self.process_details_unsupported = true;
+                                            }
                                         }
                                         Err(_) => {
                                             // No reply at all: old agents IGNORE
@@ -1583,6 +1888,7 @@ impl App {
                 filtered_indices: &self.procs_filtered,
                 cached_rows: &self.procs_row_cache,
                 peak_cpu: self.procs_row_peak_cpu,
+                is_local: self.is_local,
             },
         );
 
@@ -1603,6 +1909,7 @@ impl App {
                     },
                     max_mem_bytes: self.max_process_mem_bytes,
                     unsupported: self.process_details_unsupported,
+                    is_local: self.is_local,
                 },
             );
         }
@@ -1612,5 +1919,360 @@ impl App {
 impl Default for App {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod kill_refresh_tests {
+    use super::*;
+    use socktop_connector::{Metrics, ProcessInfo};
+
+    fn proc(pid: u32, name: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.into(),
+            cpu_usage: 1.0,
+            mem_bytes: 1_000,
+        }
+    }
+
+    fn app_with(pids: &[u32]) -> App {
+        let mut app = App::new();
+        app.last_metrics = Some(Metrics {
+            sampled_at_ms: None,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 1_000_000,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: pids.iter().map(|p| proc(*p, "victim")).collect(),
+            gpus: None,
+            process_count: Some(pids.len()),
+        });
+        app
+    }
+
+    #[test]
+    fn dropping_a_row_updates_the_list_count_and_selection() {
+        let mut app = app_with(&[1, 2, 3]);
+        app.selected_process_pid = Some(2);
+        app.selected_process_index = Some(1);
+
+        app.forget_process_row(2);
+
+        let m = app.last_metrics.as_ref().unwrap();
+        assert_eq!(
+            m.top_processes.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(m.process_count, Some(2), "header count went stale");
+        assert_eq!(
+            app.selected_process_pid, None,
+            "selection still points at a dead process"
+        );
+        assert_eq!(app.selected_process_index, None);
+    }
+
+    /// A process that was never on screen (outside the top-N) must not decrement
+    /// the total or disturb the selection.
+    #[test]
+    fn dropping_an_offscreen_row_changes_nothing() {
+        let mut app = app_with(&[1, 2, 3]);
+        app.selected_process_pid = Some(1);
+        app.forget_process_row(999);
+        let m = app.last_metrics.as_ref().unwrap();
+        assert_eq!(m.top_processes.len(), 3);
+        assert_eq!(m.process_count, Some(3));
+        assert_eq!(app.selected_process_pid, Some(1));
+    }
+
+    /// A dead process disappears immediately, and a refresh is still scheduled
+    /// so the agent's own view catches up past its cache TTL.
+    #[test]
+    fn a_confirmed_dead_process_leaves_at_once() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        child.wait().expect("reap");
+
+        let mut app = app_with(&[pid, 4242]);
+        app.refresh_after_kill(pid);
+
+        let m = app.last_metrics.as_ref().unwrap();
+        assert_eq!(
+            m.top_processes.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            vec![4242],
+            "a process known to be gone should not still be listed"
+        );
+        assert!(app.procs_refresh_due_at.is_some(), "no refresh scheduled");
+    }
+
+    /// A process that survived the signal keeps its row — better a row that is
+    /// still true than one that vanishes and comes back.
+    #[test]
+    fn a_surviving_process_keeps_its_row_until_the_refresh() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        let mut app = app_with(&[pid]);
+        app.refresh_after_kill(pid);
+        let listed = app
+            .last_metrics
+            .as_ref()
+            .unwrap()
+            .top_processes
+            .iter()
+            .any(|p| p.pid == pid);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(listed, "row for a live process was removed optimistically");
+        assert!(app.procs_refresh_due_at.is_some());
+    }
+
+    /// The scheduled refresh must land after the agent's process cache TTL,
+    /// or it just re-reads the pre-kill snapshot.
+    #[test]
+    fn the_forced_refresh_waits_out_the_agent_cache() {
+        assert!(
+            PROC_CACHE_SETTLE >= Duration::from_millis(1_500),
+            "agent serves Processes from a 1500ms cache by default"
+        );
+    }
+}
+
+#[cfg(test)]
+mod details_close_tests {
+    use super::*;
+    use crate::ui::modal::ModalType;
+    use socktop_connector::{Metrics, ProcessInfo};
+
+    fn app_viewing(pid: u32) -> App {
+        let mut app = App::new();
+        app.last_metrics = Some(Metrics {
+            sampled_at_ms: None,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 1_000_000,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![ProcessInfo {
+                pid,
+                name: "victim".into(),
+                cpu_usage: 1.0,
+                mem_bytes: 1_000,
+            }],
+            gpus: None,
+            process_count: Some(1),
+        });
+        app.selected_process_pid = Some(pid);
+        app.selected_process_index = Some(0);
+        app.modal_manager
+            .push_modal(ModalType::ProcessDetails { pid });
+        app.max_process_mem_bytes = 12_345; // stand-in for collected history
+        app
+    }
+
+    /// Killing the process you are looking at should not leave you staring at
+    /// its details — especially since the details poll keys off the selection,
+    /// which is cleared at the same time.
+    #[test]
+    fn killing_the_viewed_process_closes_its_details() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        child.wait().expect("reap");
+
+        let mut app = app_viewing(pid);
+        app.refresh_after_kill(pid);
+
+        assert!(
+            !app.modal_manager.is_active(),
+            "details modal stayed open for a dead process"
+        );
+        assert_eq!(
+            app.max_process_mem_bytes, 0,
+            "details state was not cleared"
+        );
+        assert!(app.last_metrics.as_ref().unwrap().top_processes.is_empty());
+    }
+
+    /// A process that survived the signal keeps both its row and its details.
+    #[test]
+    fn a_surviving_process_keeps_its_details_open() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        let mut app = app_viewing(pid);
+        app.refresh_after_kill(pid);
+        let still_open = app.modal_manager.is_active();
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(still_open, "closed the details of a process still running");
+    }
+}
+
+#[cfg(test)]
+mod kill_watch_tests {
+    use super::*;
+    use socktop_connector::{Metrics, ProcessInfo};
+
+    fn metrics_with(pids: &[(u32, &str)]) -> Metrics {
+        Metrics {
+            sampled_at_ms: None,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 1_000_000,
+            mem_used: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: pids
+                .iter()
+                .map(|(pid, name)| ProcessInfo {
+                    pid: *pid,
+                    name: (*name).into(),
+                    cpu_usage: 1.0,
+                    mem_bytes: 1_000,
+                })
+                .collect(),
+            gpus: None,
+            process_count: Some(pids.len()),
+        }
+    }
+
+    fn listed(app: &App, pid: u32) -> bool {
+        app.last_metrics
+            .as_ref()
+            .is_some_and(|m| m.top_processes.iter().any(|p| p.pid == pid))
+    }
+
+    /// The reported bug: SIGTERM is a request, so the process is normally still
+    /// alive at signal time. The row must go when it actually exits, not stay
+    /// until the next full poll.
+    #[test]
+    fn a_row_goes_as_soon_as_the_process_actually_exits() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(pid, "sleep"), (1, "init")]));
+        app.selected_process_pid = Some(pid);
+
+        // Signalled, but it has not exited yet: the row stays.
+        app.refresh_after_kill(pid);
+        assert!(
+            listed(&app, pid),
+            "row vanished while the process was alive"
+        );
+
+        // It exits (as a SIGTERM'd process does, a moment later).
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // The next tick notices.
+        app.poll_kill_watch();
+        assert!(!listed(&app, pid), "row survived the process exiting");
+        assert_eq!(app.selected_process_pid, None, "selection left on a corpse");
+    }
+
+    /// Also reported: after terminating, the row came back. The agent serves
+    /// `Processes` from a 1500ms cache, so its next answer can predate the kill.
+    #[test]
+    fn a_stale_agent_snapshot_cannot_resurrect_a_killed_process() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        child.wait().expect("reap");
+
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(pid, "true"), (1, "init")]));
+        app.refresh_after_kill(pid);
+        assert!(!listed(&app, pid), "confirmed-dead row should be gone");
+
+        // The agent answers with a snapshot taken before the kill.
+        app.last_metrics = Some(metrics_with(&[(pid, "true"), (1, "init")]));
+        app.drop_tombstoned_rows();
+        assert!(!listed(&app, pid), "stale snapshot put the row back");
+        assert!(listed(&app, 1), "unrelated processes must survive");
+    }
+
+    /// His exact path: find the process with `/`, then kill it. The filtered
+    /// view is derived from the same list, so it must lose the row too.
+    #[test]
+    fn a_search_filtered_view_loses_the_row_as_well() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        child.wait().expect("reap");
+
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(pid, "victim"), (1, "init")]));
+        app.process_search_query = "victim".into();
+        assert_eq!(
+            app.procs_filter().len(),
+            1,
+            "search should match the victim"
+        );
+
+        app.refresh_after_kill(pid);
+
+        assert!(
+            app.procs_filter().is_empty(),
+            "killed process still present in the filtered list"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_leaves_the_list_is_dropped() {
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(1, "init")]));
+        app.selected_process_pid = Some(4242);
+        app.selected_process_index = Some(7);
+        app.drop_vanished_selection();
+        assert_eq!(app.selected_process_pid, None);
+        assert_eq!(app.selected_process_index, None);
+    }
+
+    #[test]
+    fn a_selection_still_in_the_list_is_kept() {
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(1, "init")]));
+        app.selected_process_pid = Some(1);
+        app.drop_vanished_selection();
+        assert_eq!(app.selected_process_pid, Some(1));
+    }
+
+    /// A process that ignores the signal must not be watched forever.
+    #[test]
+    fn the_watch_expires() {
+        let mut app = App::new();
+        app.last_metrics = Some(metrics_with(&[(1, "init")]));
+        // Already-expired deadline, for a PID that certainly exists (ourselves).
+        let me = std::process::id();
+        app.kill_watch.push((me, Instant::now()));
+        app.poll_kill_watch();
+        assert!(app.kill_watch.is_empty(), "expired watch was not dropped");
     }
 }
