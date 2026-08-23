@@ -1,8 +1,14 @@
 # Changelog
 
-## 1.60.0 — unreleased
+## 1.60.1 — unreleased
 
-Everything since `v1.50.0`. Applies to all three crates (`socktop`, `socktop_agent`, `socktop_connector`), which move to 1.60.0 together.
+Identical to 1.60.0 plus rebuilt Debian packages: the 1.60.0 debs were linked
+against glibc 2.39 (a GitHub runner migration) and would not install on
+Debian 12 / Raspberry Pi OS bookworm. CI now pins the build environment and
+gates every package against the fleet's glibc floor. 1.60.0 was never
+published to crates.io.
+
+Everything since `v1.50.0`. Applies to all three crates (`socktop`, `socktop_agent`, `socktop_connector`), which move to 1.60.1 together.
 
 ### Security
 

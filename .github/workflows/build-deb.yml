@@ -18,7 +18,15 @@ env:
 jobs:
   build-deb:
     name: Build .deb for ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    # PINNED, not ubuntu-latest: the binaries link against this runner's
+    # (multiarch) glibc, so the runner sets the MINIMUM glibc the .debs demand
+    # at install time. ubuntu-latest moved to 24.04/glibc 2.39 and the packages
+    # stopped installing on Debian 12/RPi OS bookworm (glibc 2.36). 22.04 links
+    # 2.35, which bookworm satisfies. The "enforce glibc floor" step below
+    # turns any future violation into a red build instead of a fleet-wide apt
+    # failure — if this pin ever has to move past bookworm's glibc, that step
+    # is the contract to renegotiate first.
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         include:
@@ -158,6 +166,22 @@ jobs:
         run: |
           mkdir -p debs
           cp target/${{ matrix.target }}/debian/*.deb debs/
+
+      - name: Enforce glibc floor (Debian 12 / RPi OS bookworm fleet)
+        run: |
+          # The fleet's oldest supported glibc. A .deb that demands newer libc6
+          # than this will not install on the Pis — fail HERE, not at apt time.
+          FLOOR="2.36"
+          fail=0
+          for deb in debs/*.deb; do
+            req=$(dpkg-deb -f "$deb" Depends | sed -n 's/.*libc6 (>= \([0-9.]*\)).*/\1/p' | head -1)
+            echo "$deb -> libc6 >= ${req:-none}"
+            if [ -n "$req" ] && [ "$(printf '%s\n' "$req" "$FLOOR" | sort -V | tail -1)" != "$FLOOR" ]; then
+              echo "::error::$deb requires libc6 >= $req, exceeding the fleet floor $FLOOR (bookworm). The build runner's glibc is too new — see the runs-on pin comment."
+              fail=1
+            fi
+          done
+          exit $fail
 
       - name: List generated packages
         run: ls -lh debs/
