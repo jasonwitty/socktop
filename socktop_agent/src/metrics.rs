@@ -588,9 +588,17 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     // filter when downgrading to a minimal refresh spec.
     let mut sys_guard = state.sys.lock().await;
     let sys = &mut *sys_guard;
+    // `true` = remove processes that no longer exist. With `false`, this
+    // long-lived System kept every process it had ever seen: the list grew
+    // without bound (21,648 entries on a machine with 289 processes after a
+    // few hours of build churn), process_count was meaningless, and — the
+    // reason this was found — a process you killed kept its row forever,
+    // because the agent went on reporting it. Safe here only because this is
+    // `ProcessesToUpdate::All`; with `Some(pids)` it would treat every process
+    // outside that list as dead and drop it.
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
-        false,
+        true,
         ProcessRefreshKind::nothing().with_memory().without_tasks(),
     );
 
@@ -719,8 +727,11 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
 
         //JW too complicated. simplify to remove strange behavior
 
-        // For active systems, get accurate CPU metrics
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, false, kind.with_cpu());
+        // For active systems, get accurate CPU metrics.
+        // `true` = drop processes that have exited; see the Linux path above for
+        // what `false` cost us (an ever-growing list that kept reporting dead
+        // processes). Correct only because this is `ProcessesToUpdate::All`.
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind.with_cpu());
 
         // } else {
         //     // For idle systems, just get basic process info
