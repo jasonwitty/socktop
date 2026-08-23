@@ -19,6 +19,9 @@ pub struct ProcessModalData<'a> {
     pub history: ProcessHistoryData<'a>,
     pub max_mem_bytes: u64,
     pub unsupported: bool,
+    /// Whether the agent is on this machine. Only used to decide whether the
+    /// `t` kill hint is shown — the kill itself is gated in `App`.
+    pub is_local: bool,
 }
 
 /// Parameters for rendering scatter plot
@@ -64,9 +67,15 @@ pub enum ModalAction {
     RetryConnection,
     ExitApp,
     Confirm,
+    /// Confirmation modal's second affirmative: the same action, escalated.
+    /// Used by the kill prompt for SIGKILL, where `Confirm` means SIGTERM.
+    ConfirmForce,
     Cancel,
     Dismiss,
     SwitchToParentProcess(u32), // Switch to viewing parent process details
+    /// `t` pressed while viewing a process's details — the app decides whether
+    /// the agent is local and, if so, raises the kill confirmation.
+    KillSelected(u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +83,10 @@ pub enum ModalButton {
     Retry,
     Exit,
     Confirm,
+    /// Escalated affirmative on a Confirmation modal (SIGKILL for the kill
+    /// prompt). Separate button rather than a separate keybinding so the
+    /// destructive option has to be selected deliberately.
+    ConfirmForce,
     Cancel,
     Ok,
 }

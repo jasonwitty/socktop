@@ -2,6 +2,8 @@
 
 mod app;
 mod history;
+mod local;
+mod proc_kill;
 mod profiles;
 mod retry;
 mod types;
@@ -321,10 +323,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_tls = url.starts_with("wss://");
     let has_token = url.contains("token=");
+    // Only enable local process-kill when the agent is verified to be on this
+    // machine; otherwise on-screen PIDs refer to a remote host and acting on
+    // them locally would signal the wrong process. See local::agent_is_local.
+    let is_local = local::agent_is_local(&url);
     let mut app = App::new()
         .with_intervals(metrics_interval_ms, processes_interval_ms)
         .with_status(is_tls, has_token)
-        .with_compact(parsed.compact);
+        .with_compact(parsed.compact)
+        .with_local(is_local);
     if parsed.dry_run {
         return Ok(());
     }
@@ -404,7 +411,12 @@ async fn run_demo_mode(
         }
         Err(e) => return Err(e.into()),
     };
-    let mut app = App::new().with_compact(compact);
+    // Demo mode runs the real agent on loopback, so its PIDs are real local
+    // processes — enable the local process-kill feature, gated the same way as
+    // the normal connect path (loopback resolves local).
+    let mut app = App::new()
+        .with_compact(compact)
+        .with_local(local::agent_is_local(&url));
     // Demo mode connects to localhost, so disable hostname verification
     tokio::select! { res=app.run(&url,None,false)=>{ drop(child); res } _=tokio::signal::ctrl_c()=>{ drop(child); Ok(()) } }
 }

@@ -51,6 +51,13 @@ Everything since `v1.50.0`. Applies to all three crates (`socktop`, `socktop_age
 - `socktop` consumes `socktop_connector` via a path+version dep — connector changes are testable in-repo before publishing.
 - wasm examples build against the in-repo connector; note `zellij_socktop_plugin` has pre-existing compile errors and needs its own rework.
 
+### Process kill (PR #40)
+
+- **Kill a local process from the TUI** (`t` on a selected process, or inside Process Details): btop-style Terminate/Force-kill confirmation. Local agents only — the signal is sent by socktop itself with its own privileges, never over the wire; remote agents never show the option. PID-reuse guarded (the confirmed name must still own the PID at signal time).
+- **Agent no longer reports dead processes**: a long-lived sysinfo `System` accumulated every process ever seen (21k+ entries on a 289-process host), inflating memory, per-poll work, and the process count — and keeping killed processes on screen forever. Update agent and client together on machines where the kill feature will be used.
+- Killed rows leave the list when the process actually exits and cannot be resurrected by cached agent snapshots; details views for dead processes close themselves, including through parent-navigation chains.
+- Selection hint no longer vanishes for long process names; confirmation/info dialogs size to their content.
+
 ### Upgrade notes
 
 - **Release/publish order**: `socktop_connector` → `socktop` → agent packages.
