@@ -174,7 +174,7 @@ jobs:
           FLOOR="2.36"
           fail=0
           for deb in debs/*.deb; do
-            req=$(dpkg-deb -f "$deb" Depends | grep -oE 'libc6 \(>= [0-9.]+\)' | grep -oE '[0-9.]+' || true)
+            req=$(dpkg-deb -f "$deb" Depends | sed -n 's/.*libc6 (>= \([0-9.]*\)).*/\1/p' | head -1)
             echo "$deb -> libc6 >= ${req:-none}"
             if [ -n "$req" ] && [ "$(printf '%s\n' "$req" "$FLOOR" | sort -V | tail -1)" != "$FLOOR" ]; then
               echo "::error::$deb requires libc6 >= $req, exceeding the fleet floor $FLOOR (bookworm). The build runner's glibc is too new — see the runs-on pin comment."
