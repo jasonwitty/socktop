@@ -1,14 +1,14 @@
 Package: socktop
-Version: 1.60.1-1
+Version: 1.60.2-1
 Architecture: riscv64
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
-Installed-Size: 2684
+Installed-Size: 2668
 Depends: libc6:riscv64 (>= 2.35)
-Filename: pool/main/socktop_1.60.1-1_riscv64.deb
-Size: 1171736
-MD5sum: bbb78f0264d6cf8e0fc4f792467bd9a8
-SHA1: f4aae5b83e766d7a2cfe611da81bf7771549933d
-SHA256: 310bfb3b326b9397e26e727012e2a6b7177237c367ff331283d4f22abcd6d2fc
+Filename: pool/main/socktop_1.60.2-1_riscv64.deb
+Size: 1166192
+MD5sum: 11e89c1f7909fc90047a74d2880d1362
+SHA1: 4089962ff3864209a026b585fe2b6490cfe014a2
+SHA256: e1fad743c74934a11e49808d0bba80c26f05e6d75c231f239870866ba50e1e38
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop
@@ -19,16 +19,16 @@ Description: Remote system monitor over WebSocket, TUI like top
  interface similar to the traditional 'top' command.
 
 Package: socktop-agent
-Version: 1.60.1-1
+Version: 1.60.2-1
 Architecture: riscv64
 Maintainer: Jason Witty <jasonpwitty+socktop@proton.me>
-Installed-Size: 3862
+Installed-Size: 3846
 Depends: libc6:riscv64 (>= 2.35)
-Filename: pool/main/socktop-agent_1.60.1-1_riscv64.deb
-Size: 1643144
-MD5sum: 75a5b74641281a5d8e41b5492cd88e7b
-SHA1: be064e3c268d872be05ff997cfa9994a374bec4b
-SHA256: 87d2ec9dd4a95f832355c8eb52fba68174470f46f4048282ee4b6aa9712ddeaf
+Filename: pool/main/socktop-agent_1.60.2-1_riscv64.deb
+Size: 1637096
+MD5sum: 98347f203e942073464ff8b8d16796bb
+SHA1: dec2ae6fdd5bea71f43f9e24842a0851150e24fd
+SHA256: fd4070c6e0b29adf5bb9de32f098431e9dcf7456e1fc7f4460a5e9a5708496cc
 Section: admin
 Priority: optional
 Homepage: https://github.com/jasonwitty/socktop
