@@ -271,7 +271,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if (1..=names.len()).contains(&idx) {
                         let name = &names[idx - 1];
                         if name == "demo" {
-                            return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill).await;
+                            return run_demo_mode(
+                                parsed.tls_ca.as_deref(),
+                                parsed.compact,
+                                parsed.no_kill,
+                            )
+                            .await;
                         }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
                             (
@@ -331,7 +336,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 eprintln!("If you don't have an agent running, you can try the demo mode.");
                 if prompt_yes_no("Would you like to start the demo mode now? [Y/n]: ") {
-                    return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill).await;
+                    return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill)
+                        .await;
                 } else {
                     eprintln!("Aborting. You can run 'socktop --help' for usage information.");
                     return Ok(());
