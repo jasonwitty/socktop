@@ -156,3 +156,29 @@ fn test_no_kill_env_var_accepted() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn test_unknown_option_rejected_not_treated_as_url() {
+    // Regression guard for the socktop.io incident (Aug 2026): socktop 1.60.1
+    // parsed the then-unknown --no-kill flag as the positional websocket URL,
+    // which made it prompt to overwrite the 'local' profile's URL with the
+    // literal string "--no-kill". Unknown options must fail loudly instead of
+    // falling through to the URL slot.
+    let exe = env!("CARGO_BIN_EXE_socktop");
+    let out = Command::new(exe)
+        .args(["--not-a-real-flag", "--dry-run", "ws://127.0.0.1:3000/ws"])
+        .output()
+        .expect("run socktop with unknown flag");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "unknown option should exit 2, got: {:?}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Unknown option '--not-a-real-flag'"),
+        "stderr should name the rejected option\n{err}"
+    );
+}

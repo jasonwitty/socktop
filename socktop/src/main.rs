@@ -124,6 +124,15 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                 }
             }
             _ => {
+                // An unrecognized option must never fall through to the
+                // positional URL slot: an older binary handed a newer flag
+                // would otherwise "connect" to the flag text — and offer to
+                // save it over a named profile's URL.
+                if arg.starts_with('-') {
+                    return Err(format!(
+                        "Unknown option '{arg}'. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [--no-kill] [ws://HOST:PORT/ws]"
+                    ));
+                }
                 if url.is_none() {
                     url = Some(arg);
                 } else {
@@ -155,6 +164,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("{msg}");
+            // --help produces the bare usage text and exits cleanly; real
+            // parse errors must be visible to scripts and CI as a failure.
+            if !msg.starts_with("Usage:") {
+                std::process::exit(2);
+            }
             return Ok(());
         }
     };
