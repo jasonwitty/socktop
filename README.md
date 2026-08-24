@@ -28,7 +28,7 @@ Linux (all flavors), ARM/Raspberry Pi (32b/64b), MacOS, Windows, RISC-V (experim
 
 ## Contributing
 
-Contributions are welcome and you have the freedom to use whatever development tools you would like, as long as there is a human in the loop and all the clippy and unit tests pass you are good to submit a PR. Defects / Bugs just go ahead and fix and file a PR. New features, please create a issue in advance and let me know you are offering to build it. I don't want to be in a position where you works for a couple of weeks on something and I don't want to merge it.
+Contributions are welcome and you have the freedom to use whatever development tools you would like, as long as there is a human in the loop and all the clippy and unit tests pass you are good to submit a PR. Defects / Bugs just go ahead and fix and file a PR. New features, please create a issue in advance and let me know you are offering to build it. I don't want to be in a position where you worked for a couple of weeks on something and I don't want to merge it.
 
 ### Development
 
@@ -49,9 +49,7 @@ Enable it (one-time):
 
 ## License
 
-MIT — see LICENSE.
-
----
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
