@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### TUI
+
+- **`--no-kill` flag and `SOCKTOP_NO_KILL` env var** disable the local
+  process-kill feature regardless of agent locality, for shared terminals and
+  public demos (e.g. the socktop.io webterm). Either one forces the feature
+  off and suppresses the `t` kill hints; the env var covers every socktop
+  invocation under a deployment without touching command lines. `App`'s
+  builder renamed `with_local` → `with_kill_enabled` to match what it now
+  means (locality fact AND policy).
+
 ## 1.60.1 — unreleased
 
 Identical to 1.60.0 plus rebuilt Debian packages: the 1.60.0 debs were linked

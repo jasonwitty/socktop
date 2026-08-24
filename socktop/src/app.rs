@@ -194,9 +194,10 @@ pub struct App {
     // Security / status flags
     pub is_tls: bool,
     pub has_token: bool,
-    // Whether the connected agent is on this machine. Gates the local
-    // process-kill feature (t = SIGTERM, k = SIGKILL).
-    pub is_local: bool,
+    // Whether the local process-kill feature (t = SIGTERM, k = SIGKILL) is
+    // available: the connected agent is on this machine AND no policy override
+    // (--no-kill / SOCKTOP_NO_KILL) has disabled it.
+    pub kill_enabled: bool,
     // Pending kill awaiting confirmation: (pid, process name). Which signal is
     // sent depends on the button chosen in the confirmation modal, so it isn't
     // decided until then.
@@ -295,7 +296,7 @@ impl App {
             verify_hostname: false,
             is_tls: false,
             has_token: false,
-            is_local: false,
+            kill_enabled: false,
             pending_kill: None,
             force_compact: false,
             header_title: String::new(),
@@ -349,9 +350,10 @@ impl App {
     }
 
     /// Enable the local process-kill feature. Only set true when the agent has
-    /// been verified to be on this machine (see [`crate::local`]).
-    pub fn with_local(mut self, is_local: bool) -> Self {
-        self.is_local = is_local;
+    /// been verified to be on this machine (see [`crate::local`]) and no
+    /// policy override (`--no-kill`, `SOCKTOP_NO_KILL`) forbids it.
+    pub fn with_kill_enabled(mut self, kill_enabled: bool) -> Self {
+        self.kill_enabled = kill_enabled;
         self
     }
 
@@ -375,11 +377,11 @@ impl App {
             .map(|p| p.name.clone())
     }
 
-    /// Raise the kill confirmation for `pid`. No-op unless the agent is on this
-    /// machine — the same gate the keybinding uses, repeated here because this
+    /// Raise the kill confirmation for `pid`. No-op unless the kill feature is
+    /// enabled — the same gate the keybinding uses, repeated here because this
     /// is also reachable from the details modal.
     fn prompt_kill(&mut self, pid: u32) {
-        if !self.is_local {
+        if !self.kill_enabled {
             return;
         }
         let name = self
@@ -1182,7 +1184,7 @@ impl App {
                     // the details modal so it could not be reused there, and one
                     // key for both entry points is one thing to remember.
                     // SIGTERM vs SIGKILL is chosen in the confirmation modal.
-                    if self.is_local
+                    if self.kill_enabled
                         && !self.modal_manager.is_active()
                         && matches!(k.code, KeyCode::Char('t') | KeyCode::Char('T'))
                         && let Some(pid) = self.selected_process_pid
@@ -1948,7 +1950,7 @@ impl App {
                 filtered_indices: &self.procs_filtered,
                 cached_rows: &self.procs_row_cache,
                 peak_cpu: self.procs_row_peak_cpu,
-                is_local: self.is_local,
+                kill_enabled: self.kill_enabled,
             },
         );
 
@@ -1969,7 +1971,7 @@ impl App {
                     },
                     max_mem_bytes: self.max_process_mem_bytes,
                     unsupported: self.process_details_unsupported,
-                    is_local: self.is_local,
+                    kill_enabled: self.kill_enabled,
                 },
             );
         }

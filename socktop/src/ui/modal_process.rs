@@ -130,8 +130,8 @@ impl ModalManager {
         ])];
 
         // Kill from here too — same key as the processes pane, and only shown
-        // when the agent is local, since that is the only case where it works.
-        if data.is_local
+        // when the kill feature is enabled (agent local, no policy override).
+        if data.kill_enabled
             && let Some(line) = help_text.first_mut()
         {
             line.spans.push(Span::styled(

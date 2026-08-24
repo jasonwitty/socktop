@@ -106,3 +106,53 @@ fn test_compact_flag_documented_and_accepted() {
         String::from_utf8_lossy(&out2.stderr)
     );
 }
+
+#[test]
+fn test_no_kill_flag_documented_and_accepted() {
+    let exe = env!("CARGO_BIN_EXE_socktop");
+    let out = Command::new(exe)
+        .args(["--no-kill", "--help"])
+        .output()
+        .expect("run socktop --no-kill --help");
+    assert!(
+        out.status.success(),
+        "socktop --no-kill --help did not succeed"
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("--no-kill"),
+        "help text missing --no-kill\n{text}"
+    );
+
+    // The flag must not be mistaken for the positional URL argument.
+    let out2 = Command::new(exe)
+        .args(["--no-kill", "--dry-run", "ws://127.0.0.1:3000/ws"])
+        .output()
+        .expect("run socktop --no-kill --dry-run");
+    assert!(
+        out2.status.success(),
+        "socktop --no-kill with a URL was rejected: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}
+
+#[test]
+fn test_no_kill_env_var_accepted() {
+    // SOCKTOP_NO_KILL must not break startup — the env-only path is how the
+    // webterm deployment disables the kill feature for every invocation.
+    let exe = env!("CARGO_BIN_EXE_socktop");
+    let out = Command::new(exe)
+        .env("SOCKTOP_NO_KILL", "1")
+        .args(["--dry-run", "ws://127.0.0.1:3000/ws"])
+        .output()
+        .expect("run socktop with SOCKTOP_NO_KILL=1");
+    assert!(
+        out.status.success(),
+        "socktop with SOCKTOP_NO_KILL=1 did not succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

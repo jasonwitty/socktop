@@ -19,9 +19,10 @@ pub struct ProcessModalData<'a> {
     pub history: ProcessHistoryData<'a>,
     pub max_mem_bytes: u64,
     pub unsupported: bool,
-    /// Whether the agent is on this machine. Only used to decide whether the
-    /// `t` kill hint is shown — the kill itself is gated in `App`.
-    pub is_local: bool,
+    /// Whether the process-kill feature is available (agent local, no policy
+    /// override). Only used to decide whether the `t` kill hint is shown —
+    /// the kill itself is gated in `App`.
+    pub kill_enabled: bool,
 }
 
 /// Parameters for rendering scatter plot

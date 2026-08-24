@@ -25,6 +25,18 @@ pub(crate) struct ParsedArgs {
     processes_interval_ms: Option<u64>,
     verify_hostname: bool,
     compact: bool,
+    no_kill: bool,
+}
+
+/// True when the `SOCKTOP_NO_KILL` environment variable disables the process-kill
+/// feature. Any value other than empty, `0`, or `false` (case-insensitive) counts
+/// as set, so a deployment can export `SOCKTOP_NO_KILL=1` once and every socktop
+/// launched under it — whatever its command line — has the feature off.
+pub(crate) fn no_kill_from_env() -> bool {
+    match env::var("SOCKTOP_NO_KILL") {
+        Ok(v) => !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, String> {
@@ -40,11 +52,12 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
     let mut processes_interval_ms: Option<u64> = None;
     let mut verify_hostname = false;
     let mut compact = false;
+    let mut no_kill = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 return Err(format!(
-                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"
+                    "Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [--no-kill] [--metrics-interval-ms N] [--processes-interval-ms N] [ws://HOST:PORT/ws]\n"
                 ));
             }
             "--tls-ca" | "-t" => {
@@ -69,6 +82,12 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                 // Force the small-window layout at any terminal size. Without it the
                 // layout switches on its own once the window gets too short.
                 compact = true;
+            }
+            "--no-kill" => {
+                // Disable the local process-kill feature even when the agent is
+                // local. For shared/kiosk deployments; SOCKTOP_NO_KILL=1 in the
+                // environment does the same without touching the command line.
+                no_kill = true;
             }
             "--dry-run" => {
                 // intentionally undocumented
@@ -109,7 +128,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
                     url = Some(arg);
                 } else {
                     return Err(format!(
-                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [ws://HOST:PORT/ws]"
+                        "Unexpected argument. Usage: {prog} [--tls-ca CERT_PEM|-t CERT_PEM] [--verify-hostname] [--profile NAME|-P NAME] [--save] [--demo] [--compact] [--no-kill] [ws://HOST:PORT/ws]"
                     ));
                 }
             }
@@ -126,6 +145,7 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
         processes_interval_ms,
         verify_hostname,
         compact,
+        no_kill,
     })
 }
 
@@ -146,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if parsed.demo || matches!(parsed.profile.as_deref(), Some("demo")) {
-        return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
+        return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill).await;
     }
 
     let profiles_file = load_profiles();
@@ -251,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if (1..=names.len()).contains(&idx) {
                         let name = &names[idx - 1];
                         if name == "demo" {
-                            return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
+                            return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill).await;
                         }
                         if let Some(entry) = profiles_mut.profiles.get(name) {
                             (
@@ -311,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 eprintln!("If you don't have an agent running, you can try the demo mode.");
                 if prompt_yes_no("Would you like to start the demo mode now? [Y/n]: ") {
-                    return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact).await;
+                    return run_demo_mode(parsed.tls_ca.as_deref(), parsed.compact, parsed.no_kill).await;
                 } else {
                     eprintln!("Aborting. You can run 'socktop --help' for usage information.");
                     return Ok(());
@@ -324,14 +344,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_tls = url.starts_with("wss://");
     let has_token = url.contains("token=");
     // Only enable local process-kill when the agent is verified to be on this
-    // machine; otherwise on-screen PIDs refer to a remote host and acting on
-    // them locally would signal the wrong process. See local::agent_is_local.
-    let is_local = local::agent_is_local(&url);
+    // machine — otherwise on-screen PIDs refer to a remote host and acting on
+    // them locally would signal the wrong process (see local::agent_is_local) —
+    // AND neither --no-kill nor SOCKTOP_NO_KILL disables it as a matter of
+    // policy (shared terminals, public demos).
+    let kill_enabled = local::agent_is_local(&url) && !parsed.no_kill && !no_kill_from_env();
     let mut app = App::new()
         .with_intervals(metrics_interval_ms, processes_interval_ms)
         .with_status(is_tls, has_token)
         .with_compact(parsed.compact)
-        .with_local(is_local);
+        .with_kill_enabled(kill_enabled);
     if parsed.dry_run {
         return Ok(());
     }
@@ -398,6 +420,7 @@ fn gather_intervals(
 async fn run_demo_mode(
     _tls_ca: Option<&str>,
     compact: bool,
+    no_kill: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let port = 3231;
     let url = format!("ws://127.0.0.1:{port}/ws");
@@ -413,10 +436,11 @@ async fn run_demo_mode(
     };
     // Demo mode runs the real agent on loopback, so its PIDs are real local
     // processes — enable the local process-kill feature, gated the same way as
-    // the normal connect path (loopback resolves local).
+    // the normal connect path (loopback resolves local, --no-kill and
+    // SOCKTOP_NO_KILL still override).
     let mut app = App::new()
         .with_compact(compact)
-        .with_local(local::agent_is_local(&url));
+        .with_kill_enabled(local::agent_is_local(&url) && !no_kill && !no_kill_from_env());
     // Demo mode connects to localhost, so disable hostname verification
     tokio::select! { res=app.run(&url,None,false)=>{ drop(child); res } _=tokio::signal::ctrl_c()=>{ drop(child); Ok(()) } }
 }

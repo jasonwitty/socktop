@@ -87,9 +87,10 @@ pub struct ProcessDisplayParams<'a> {
     /// Peak cpu_usage from the most recent cache build; used to bold the
     /// busiest process. -1.0 if no cache.
     pub peak_cpu: f32,
-    /// Agent is on this machine, so the `t` kill hint applies. Without it the
-    /// hint would advertise a key that deliberately does nothing.
-    pub is_local: bool,
+    /// The process-kill feature is available (agent local, no policy
+    /// override), so the `t` kill hint applies. Without it the hint would
+    /// advertise a key that deliberately does nothing.
+    pub kill_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -464,7 +465,7 @@ pub fn draw_top_processes(f: &mut ratatui::Frame<'_>, area: Rect, params: Proces
             Span::styled(" details", label),
             Span::styled("  ·  ", label),
         ];
-        if params.is_local {
+        if params.kill_enabled {
             hints.push(Span::styled("t", key));
             hints.push(Span::styled(" kill", label));
             hints.push(Span::styled("  ·  ", label));
@@ -952,7 +953,7 @@ mod click_tests {
                         filtered_indices: &idxs,
                         cached_rows: &cache,
                         peak_cpu: peak,
-                        is_local: false,
+                        kill_enabled: false,
                     },
                 )
             })
@@ -1066,7 +1067,7 @@ mod tooltip_tests {
     }
 
     /// Render the pane with a selection and return the whole buffer as text.
-    fn rendered(name: &str, width: u16, is_local: bool) -> String {
+    fn rendered(name: &str, width: u16, kill_enabled: bool) -> String {
         let m = metrics(name);
         let mut cache = Vec::new();
         let peak = rebuild_row_cache(&m, &mut cache);
@@ -1088,7 +1089,7 @@ mod tooltip_tests {
                         filtered_indices: &idxs,
                         cached_rows: &cache,
                         peak_cpu: peak,
-                        is_local,
+                        kill_enabled,
                     },
                 )
             })
