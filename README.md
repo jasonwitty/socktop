@@ -1,13 +1,18 @@
 # socktop
 
-socktop is a remote system monitor with a rich TUI, inspired by top/btop, talking to a lightweight agent over WebSockets.
-
-- Linux agent: near-zero CPU when idle (request-driven, no always-on sampler)
-- TUI: smooth graphs, sortable process table, scrollbars, readable colors
-
-[socktop.io](https://www.socktop.io) 
+_socktop_ is a remote system monitor with a rich TUI, inspired by top/btop, talking to an ultra lightweight agent over WebSockets.
 
 <img src="./docs/socktop_demo.apng" width="100%">
+
+## Resources
+
+| Resource | Location |
+| -------- | -------- |
+| Website and online demo (yes it's real) | [socktop.io](https://www.socktop.io) |
+| Quick Start guide   | [https://socktop.io/assets/docs/installation/quick-start.html](https://socktop.io/assets/docs/installation/quick-start.html)  |
+| Prereqs | [https://socktop.io/assets/docs/installation/prerequisites.html](https://socktop.io/assets/docs/installation/prerequisites.html) |
+| APT Install | [https://socktop.io/assets/docs/installation/apt.html](https://socktop.io/assets/docs/installation/apt.html) |
+| Cargo Install | [https://socktop.io/assets/docs/installation/cargo.html](https://socktop.io/assets/docs/installation/cargo.html)
 
 ---
 
