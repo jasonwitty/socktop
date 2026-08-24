@@ -1,6 +1,6 @@
 # socktop
 
-_socktop_ is a remote system monitor with a rich TUI, inspired by top/btop, talking to an ultra lightweight agent over WebSockets.
+_socktop_ is a remote system monitor with a rich TUI, talking to an ultra lightweight agent over WebSockets.
 
 <img src="./docs/socktop_demo.apng" width="100%">
 
@@ -13,7 +13,10 @@ _socktop_ is a remote system monitor with a rich TUI, inspired by top/btop, talk
 | Prereqs | [https://socktop.io/assets/docs/installation/prerequisites.html](https://socktop.io/assets/docs/installation/prerequisites.html) |
 | APT Install | [https://socktop.io/assets/docs/installation/apt.html](https://socktop.io/assets/docs/installation/apt.html) |
 | Cargo Install | [https://socktop.io/assets/docs/installation/cargo.html](https://socktop.io/assets/docs/installation/cargo.html)
-
+| Usage | [https://socktop.io/assets/docs/usage/general.html](https://socktop.io/assets/docs/usage/general.html)
+| Auth Setup | [https://socktop.io/assets/docs/security/token.html](https://socktop.io/assets/docs/security/token.html) |
+| TLS Setup | [https://socktop.io/assets/docs/security/tls.html](https://socktop.io/assets/docs/security/tls.html) |
+| Monitoring Multiple Hosts | [https://socktop.io/assets/docs/advanced/tmux.html](tmux) [https://socktop.io/assets/docs/advanced/zellij.html](zellij) |
 ---
 
 ## Features
