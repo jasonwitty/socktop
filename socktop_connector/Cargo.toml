@@ -1,6 +1,6 @@
 [package]
 name = "socktop_connector"
-version = "1.60.1"
+version = "1.60.2"
 edition = "2024"
 license = "MIT"
 description = "WebSocket connector library for socktop agent communication"
