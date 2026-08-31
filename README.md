@@ -1,5 +1,12 @@
 # socktop
 
+[![crates.io](https://img.shields.io/crates/v/socktop-agent.svg)](https://crates.io/crates/socktop-agent)
+[![crates.io](https://img.shields.io/crates/v/socktop.svg)](https://crates.io/crates/socktop)
+![Crates.io Total Downloads](https://img.shields.io/crates/d/socktop-agent)
+![GitHub Repo stars](https://img.shields.io/github/stars/jasonwitty/socktop)
+[![license](https://img.shields.io/crates/l/socktop.svg)](./LICENSE)
+
+
 _socktop_ is a remote system monitor with a rich TUI, talking to an ultra lightweight agent over WebSockets.
 
 <img src="./docs/socktop_demo_1_60.apng" width="100%">
