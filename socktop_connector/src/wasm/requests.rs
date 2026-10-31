@@ -61,6 +61,7 @@ pub async fn send_request_and_wait(
                     networks: vec![],
                     top_processes: vec![],
                     gpus: None,
+                    gpus_extra: None,
                     process_count: None,
                 };
                 Ok(AgentResponse::Metrics(placeholder_metrics))

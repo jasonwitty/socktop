@@ -604,6 +604,7 @@ mod render_tests {
             networks: vec![],
             top_processes: vec![],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(0),
         }
     }

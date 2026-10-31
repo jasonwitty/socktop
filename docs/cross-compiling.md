@@ -173,6 +173,40 @@ sudo pacman -Syu
 sudo pacman -S libdrm
 ```
 
+### NixOS and other targets without a normal loader path
+
+Nothing on NixOS lives at a fixed path, so the binary needs its dependencies
+pointed at explicitly:
+
+- **libdrm / libdrm_amdgpu** (linked by the GPU probe) have to come from the
+  store. Pick the **64-bit** copy — the store also carries a 32-bit libdrm for
+  the NVIDIA driver's compat layer, and choosing that one gives
+  `wrong ELF class: ELFCLASS32` rather than a missing-library error.
+- **libnvidia-ml.so.1**, which the agent loads by soname for NVIDIA utilisation,
+  temperatures, power and fans, lives under `/run/opengl-driver/lib`, which is
+  not on the default search path in a service or a non-login shell.
+- `/etc` is read-only, so dropping a unit file into `/etc/systemd/system` does
+  not work; either declare the service in the NixOS configuration and rebuild,
+  or install it as a lingering user service (`loginctl enable-linger`), which
+  needs no rebuild.
+
+A wrapper that resolves the store paths at start survives rebuilds that move
+them. Save it as `/usr/local/bin/socktop-agent-wrap`:
+
+```sh
+#!/bin/sh
+for d in /nix/store/*-libdrm-*/lib; do
+  [ -e "$d/libdrm_amdgpu.so.1" ] || continue
+  # ELF class byte: 1 = 32-bit (the driver's compat copy), 2 = x86-64.
+  [ "$(od -An -j4 -N1 -tu1 "$d/libdrm_amdgpu.so.1" | tr -d ' ')" = 2 ] || continue
+  LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+done
+export LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec /usr/local/bin/socktop_agent "$@"
+```
+
+and point the service's `ExecStart` at it instead of at the binary.
+
 ## Make the Binary Executable and Install
 
 ```bash

@@ -55,7 +55,20 @@ pub struct Metrics {
     pub disks: Vec<DiskInfo>,
     pub networks: Vec<NetworkInfo>,
     pub top_processes: Vec<ProcessInfo>,
+    /// The primary card only — exactly what this field has always held, so a
+    /// client that has never heard of multi-GPU keeps showing the same card it
+    /// always showed.
     pub gpus: Option<Vec<GpuMetrics>>,
+    /// Every other card the driver sees, primary excluded. `None` (rather than
+    /// an empty vector) when there is nothing extra, so the field disappears
+    /// from the JSON for single-card hosts and old clients parse the payload
+    /// exactly as before.
+    ///
+    /// Named `gpus_extra` rather than growing `gpus` so the primary card's
+    /// identity is untouched across agent versions; see the client's
+    /// `gpu_set()`, which recombines the two and de-duplicates by UUID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus_extra: Option<Vec<GpuMetrics>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

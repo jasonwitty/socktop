@@ -24,6 +24,7 @@ fn touch() {
         networks: vec![],
         top_processes: vec![],
         gpus: None,
+        gpus_extra: None,
     };
 }
 

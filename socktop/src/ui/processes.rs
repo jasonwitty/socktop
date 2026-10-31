@@ -928,6 +928,7 @@ mod click_tests {
                 mem_bytes: 1_000_000,
             }],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(1),
         }
     }
@@ -1066,6 +1067,7 @@ mod tooltip_tests {
                 mem_bytes: 1_000_000,
             }],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(1),
         }
     }

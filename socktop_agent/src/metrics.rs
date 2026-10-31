@@ -1,6 +1,6 @@
 //! Metrics collection using sysinfo for socktop_agent.
 
-use crate::gpu::collect_all_gpus;
+use crate::gpu::{GpuMetrics, collect_all_gpus};
 use crate::state::AppState;
 use crate::types::{
     DetailedProcessInfo, DiskInfo, JournalEntry, JournalResponse, LogLevel, Metrics, NetworkInfo,
@@ -280,7 +280,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
 
     // GPUs: negative-probe cache short-circuits GPU-less hosts; otherwise the
     // TTL cache answers, and only a stale miss reaches the worker thread.
-    let gpus = if !gpu_enabled()
+    let all_gpus = if !gpu_enabled()
         || (state.gpu_checked.load(std::sync::atomic::Ordering::Acquire)
             && !state.gpu_present.load(std::sync::atomic::Ordering::Relaxed))
     {
@@ -301,6 +301,10 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         GPUS.set(v.clone());
         v
     };
+
+    // The wire keeps the primary card in `gpus` on its own and the rest in
+    // `gpus_extra`; see `split_for_wire`.
+    let (gpus, gpus_extra) = split_for_wire(all_gpus.as_deref());
 
     let sampled_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -323,6 +327,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         networks,
         top_processes: Vec::new(),
         gpus,
+        gpus_extra,
     };
     {
         let mut cache = state.cache_metrics.lock().await;
@@ -1467,6 +1472,102 @@ pub async fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String
         notice,
         cached_at: response_timestamp,
     })
+}
+
+/// Split the enumerated cards into what goes on the wire.
+///
+/// The primary card keeps `gpus` to itself and the remaining cards go in
+/// `gpus_extra`, so a client that has never heard of multi-GPU reads exactly the
+/// payload it used to. `gpus_extra` is `None` rather than `Some(vec![])` when
+/// there is nothing extra — with `skip_serializing_if` that makes the key
+/// disappear, so a single-card host's payload stays byte-identical to an older
+/// agent's.
+fn split_for_wire(
+    all: Option<&[GpuMetrics]>,
+) -> (Option<Vec<GpuMetrics>>, Option<Vec<GpuMetrics>>) {
+    match all {
+        // Primary on its own, remaining cards only when there are any.
+        Some([primary, rest @ ..]) => (
+            Some(vec![primary.clone()]),
+            (!rest.is_empty()).then(|| rest.to_vec()),
+        ),
+        // A GPU-less host, or a driver that enumerated nothing usable.
+        _ => (None, None),
+    }
+}
+
+#[cfg(test)]
+mod gpu_wire_split_tests {
+    use super::split_for_wire;
+    use crate::gpu::GpuMetrics;
+    use crate::types::Metrics;
+
+    fn card(name: &str) -> GpuMetrics {
+        GpuMetrics {
+            name: name.into(),
+            utilization_gpu_pct: 10,
+            mem_used_bytes: 1_000,
+            mem_total_bytes: 10_000,
+            temp_c: Some(60.0),
+            temp_slowdown_c: None,
+            temp_mem_max_c: None,
+            power_w: None,
+            power_limit_w: None,
+            fan_pct: None,
+            nvml_index: None,
+            uuid: None,
+        }
+    }
+
+    fn metrics(gpus: Option<Vec<GpuMetrics>>, extra: Option<Vec<GpuMetrics>>) -> Metrics {
+        Metrics {
+            sampled_at_ms: 0,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 0,
+            mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![],
+            gpus,
+            gpus_extra: extra,
+        }
+    }
+
+    /// The primary card keeps `gpus` to itself however many cards the driver
+    /// enumerates; that is the field an older client already understands.
+    #[test]
+    fn the_primary_card_stays_alone_in_its_own_field() {
+        let (gpus, extra) = split_for_wire(None::<&[GpuMetrics]>);
+        assert!(gpus.is_none() && extra.is_none());
+
+        let (gpus, extra) = split_for_wire(Some(&[card("a")]));
+        assert_eq!(gpus.unwrap().len(), 1);
+        assert!(extra.is_none(), "single-card host sends no extra list");
+
+        let (gpus, extra) = split_for_wire(Some(&[card("a"), card("b"), card("c")]));
+        assert_eq!(gpus.unwrap()[0].name, "a");
+        assert_eq!(extra.unwrap().len(), 2);
+    }
+
+    /// A single-card host's payload must be indistinguishable from one sent by an
+    /// agent that has no multi-GPU support at all, so an old client cannot trip
+    /// over a key it has never seen.
+    #[test]
+    fn a_single_card_payload_carries_no_new_key() {
+        let one = serde_json::to_string(&metrics(Some(vec![card("a")]), None)).unwrap();
+        assert!(!one.contains("gpus_extra"), "{one}");
+
+        let two =
+            serde_json::to_string(&metrics(Some(vec![card("a")]), Some(vec![card("b")]))).unwrap();
+        assert!(two.contains("gpus_extra"), "{two}");
+    }
 }
 
 #[cfg(test)]
