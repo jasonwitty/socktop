@@ -254,6 +254,8 @@ mod render_tests {
             cpu_per_core: vec![],
             mem_total: 1024,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),

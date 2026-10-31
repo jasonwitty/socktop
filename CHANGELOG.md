@@ -4,6 +4,25 @@
 
 ### TUI
 
+- **Memory and Swap readouts gained a digit** — `9.63GB / 46.93GB`,
+  `cache 30.35GB`, `0B / 8.00GB` — matching btop's precision so the two can be
+  compared side by side, and so the last digit visibly ticks between refreshes
+  instead of the numbers looking frozen. Tables, disks and network rates stay
+  at one decimal; the unit thresholds are shared, so the two precisions cannot
+  disagree about where KB becomes MB.
+- **The Memory bar is now three stacked segments** — used (magenta), reclaimable
+  cache (blue) and free — instead of one bar over a blank track. `used` has
+  always been `MemTotal - MemAvailable`, i.e. the kernel counts clean
+  file-backed pages as available, not used; a process whose RSS is mostly a
+  mapped file (llama.cpp mmaps its GGUF by default) therefore shows gigabytes
+  in the process list while the bar barely moves. That was correct but looked
+  like a bug, and now the reclaimable slice is visible and labelled in place
+  (`cache 28.10GB`, `free 8.50GB`), with `9.40GB / 46.00GB` moved to the pane title
+  so it stays readable in the compact layout. Agents that do not send the new
+  fields, and Windows (where free == available), fall back to the old look.
+  `scripts/mem_accounting_check.sh` reproduces both sides of the accounting
+  against a live agent: an 8 GiB anonymous heap moves the bar the whole way, a
+  1.6 GiB mmap'd file moves the process row and not the bar.
 - **`--no-kill` flag and `SOCKTOP_NO_KILL` env var** disable the local
   process-kill feature regardless of agent locality, for shared terminals and
   public demos (e.g. the socktop.io webterm). Either one forces the feature
@@ -11,6 +30,14 @@
   invocation under a deployment without touching command lines. `App`'s
   builder renamed `with_local` → `with_kill_enabled` to match what it now
   means (locality fact AND policy).
+
+### Agent
+
+- `get_metrics` responses carry `mem_free` and `mem_available` alongside
+  `mem_used`; that pair is what makes the cache segment possible. Additive in
+  both directions: old clients ignore the new fields, new clients default them
+  to 0 and draw without the segment. On Windows `mem_free` equals
+  `mem_available` (there is no separate figure).
 
 ## 1.60.1 — unreleased
 

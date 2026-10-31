@@ -38,7 +38,16 @@ pub struct Metrics {
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,
+    /// MemTotal - MemAvailable (Linux) / equivalent on other platforms.
+    /// Reclaimable memory is not counted, which is why a process whose RSS is
+    /// mostly a mapped file does not move this number.
     pub mem_used: u64,
+    /// MemFree, so the client can show reclaimable cache as its own segment.
+    /// Windows has no separate figure and reports the same value as
+    /// `mem_available`.
+    pub mem_free: u64,
+    /// MemAvailable: MemFree plus reclaimable page/buffer cache.
+    pub mem_available: u64,
     pub swap_total: u64,
     pub swap_used: u64,
     pub hostname: String,
