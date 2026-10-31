@@ -61,7 +61,19 @@ pub struct Metrics {
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,
+    /// MemTotal - MemAvailable: what the memory gauge's percentage is based
+    /// on. Reclaimable memory (clean file-backed pages, i.e. an mmap'd model
+    /// file) is deliberately NOT included.
     pub mem_used: u64,
+    /// MemFree. Absent (0) on agents that predate the field, and equal to
+    /// `mem_available` on Windows, so clients must treat a zero value as "no
+    /// cache segment available" rather than "no free memory".
+    #[serde(default)]
+    pub mem_free: u64,
+    /// MemAvailable: MemFree plus reclaimable page/buffer cache. Subtracting
+    /// `mem_free` gives the cache slice.
+    #[serde(default)]
+    pub mem_available: u64,
     pub swap_total: u64,
     pub swap_used: u64,
     pub hostname: String,

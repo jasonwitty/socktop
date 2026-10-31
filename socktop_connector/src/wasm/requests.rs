@@ -51,6 +51,8 @@ pub async fn send_request_and_wait(
                     cpu_per_core: vec![0.0],
                     mem_total: 0,
                     mem_used: 0,
+                    mem_free: 0,
+                    mem_available: 0,
                     swap_total: 0,
                     swap_used: 0,
                     hostname: format!("Binary protobuf data ({byte_count} bytes)"),

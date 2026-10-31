@@ -197,7 +197,15 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
     };
 
     let mem_total = sys.total_memory();
-    let mem_used = mem_total.saturating_sub(sys.available_memory());
+    // `used` follows the kernel's own convention (MemTotal - MemAvailable), so
+    // reclaimable memory — clean file-backed pages such as an mmap'd GGUF
+    // model file — is NOT counted even though it is in the owning process's
+    // RSS. free/available go over the wire as well so the client can show that
+    // reclaimable slice as its own segment instead of a blank bar (see
+    // socktop/src/ui/mem.rs).
+    let mem_available = sys.available_memory();
+    let mem_free = sys.free_memory();
+    let mem_used = mem_total.saturating_sub(mem_available);
     let swap_total = sys.total_swap();
     let swap_used = sys.used_swap();
     drop(sys);
@@ -305,6 +313,8 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         cpu_per_core,
         mem_total,
         mem_used,
+        mem_free,
+        mem_available,
         swap_total,
         swap_used,
         hostname,
