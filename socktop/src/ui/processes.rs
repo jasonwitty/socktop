@@ -913,6 +913,8 @@ mod click_tests {
             cpu_per_core: vec![],
             mem_total: 32_000_000_000,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -926,6 +928,7 @@ mod click_tests {
                 mem_bytes: 1_000_000,
             }],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(1),
         }
     }
@@ -1049,6 +1052,8 @@ mod tooltip_tests {
             cpu_per_core: vec![],
             mem_total: 32_000_000_000,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -1062,6 +1067,7 @@ mod tooltip_tests {
                 mem_bytes: 1_000_000,
             }],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(1),
         }
     }

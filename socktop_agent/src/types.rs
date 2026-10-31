@@ -38,7 +38,16 @@ pub struct Metrics {
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,
+    /// MemTotal - MemAvailable (Linux) / equivalent on other platforms.
+    /// Reclaimable memory is not counted, which is why a process whose RSS is
+    /// mostly a mapped file does not move this number.
     pub mem_used: u64,
+    /// MemFree, so the client can show reclaimable cache as its own segment.
+    /// Windows has no separate figure and reports the same value as
+    /// `mem_available`.
+    pub mem_free: u64,
+    /// MemAvailable: MemFree plus reclaimable page/buffer cache.
+    pub mem_available: u64,
     pub swap_total: u64,
     pub swap_used: u64,
     pub hostname: String,
@@ -46,7 +55,20 @@ pub struct Metrics {
     pub disks: Vec<DiskInfo>,
     pub networks: Vec<NetworkInfo>,
     pub top_processes: Vec<ProcessInfo>,
+    /// The primary card only — exactly what this field has always held, so a
+    /// client that has never heard of multi-GPU keeps showing the same card it
+    /// always showed.
     pub gpus: Option<Vec<GpuMetrics>>,
+    /// Every other card the driver sees, primary excluded. `None` (rather than
+    /// an empty vector) when there is nothing extra, so the field disappears
+    /// from the JSON for single-card hosts and old clients parse the payload
+    /// exactly as before.
+    ///
+    /// Named `gpus_extra` rather than growing `gpus` so the primary card's
+    /// identity is untouched across agent versions; see the client's
+    /// `gpu_set()`, which recombines the two and de-duplicates by UUID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus_extra: Option<Vec<GpuMetrics>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

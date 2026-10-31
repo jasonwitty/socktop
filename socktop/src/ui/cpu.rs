@@ -594,6 +594,8 @@ mod render_tests {
             cpu_per_core: cores,
             mem_total: 1024,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -602,6 +604,7 @@ mod render_tests {
             networks: vec![],
             top_processes: vec![],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(0),
         }
     }

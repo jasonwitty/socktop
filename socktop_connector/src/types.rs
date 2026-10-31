@@ -50,6 +50,37 @@ pub struct GpuInfo {
 
     #[serde(default, alias = "temp_c", alias = "temperature_c")]
     pub temp: Option<f32>,
+
+    /// Die temperature at which the card begins throttling, when the driver
+    /// reports it. Static per card, so the client can colour `temp` against the
+    /// card's own limit instead of a constant guessed for a different model.
+    #[serde(default, alias = "gpu_temp_slowdown_c")]
+    pub temp_slowdown_c: Option<f32>,
+
+    /// VRAM temperature limit. NVML publishes the limit without a live reading,
+    /// so this is context, not a gauge.
+    #[serde(default)]
+    pub temp_mem_max_c: Option<f32>,
+
+    #[serde(default, alias = "power_usage_w")]
+    pub power_w: Option<f32>,
+
+    /// The power limit the card is currently held to, which is not necessarily
+    /// its factory limit on a host that has been power-capped.
+    #[serde(default)]
+    pub power_limit_w: Option<f32>,
+
+    #[serde(default, alias = "fan_speed_pct")]
+    pub fan_pct: Option<u32>,
+
+    /// Driver-side device index, stable for the life of the driver session.
+    #[serde(default, alias = "index", alias = "device_index")]
+    pub nvml_index: Option<u32>,
+
+    /// Strongest available card identity; used to avoid listing the primary card
+    /// twice when an agent reports it through both the display driver and NVML.
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -61,7 +92,19 @@ pub struct Metrics {
     pub cpu_total: f32,
     pub cpu_per_core: Vec<f32>,
     pub mem_total: u64,
+    /// MemTotal - MemAvailable: what the memory gauge's percentage is based
+    /// on. Reclaimable memory (clean file-backed pages, i.e. an mmap'd model
+    /// file) is deliberately NOT included.
     pub mem_used: u64,
+    /// MemFree. Absent (0) on agents that predate the field, and equal to
+    /// `mem_available` on Windows, so clients must treat a zero value as "no
+    /// cache segment available" rather than "no free memory".
+    #[serde(default)]
+    pub mem_free: u64,
+    /// MemAvailable: MemFree plus reclaimable page/buffer cache. Subtracting
+    /// `mem_free` gives the cache slice.
+    #[serde(default)]
+    pub mem_available: u64,
     pub swap_total: u64,
     pub swap_used: u64,
     pub hostname: String,
@@ -70,6 +113,13 @@ pub struct Metrics {
     pub networks: Vec<NetworkInfo>,
     pub top_processes: Vec<ProcessInfo>,
     pub gpus: Option<Vec<GpuInfo>>,
+    /// Cards beyond the primary one, absent on agents that predate multi-GPU
+    /// reporting (and on single-card hosts, which send nothing). The client
+    /// recombines the two fields in `ui::gpu::gpu_set()`; the primary card is
+    /// kept separate on the wire so a client that only ever reads `gpus` keeps
+    /// showing exactly the card it always showed.
+    #[serde(default, alias = "additional_gpus", alias = "extra_gpus")]
+    pub gpus_extra: Option<Vec<GpuInfo>>,
     // New: keep the last reported total process count
     #[serde(default)]
     pub process_count: Option<usize>,

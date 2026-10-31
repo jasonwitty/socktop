@@ -36,7 +36,7 @@ use crate::ui::processes::{
 };
 use crate::ui::{
     disks::draw_disks,
-    gpu::{draw_gpu, draw_gpu_compact},
+    gpu::{clamp_tab, cycle_tab, draw_gpu, draw_gpu_compact, gpu_handle_mouse, gpu_set, tab_count},
     header::{HeaderState, build_header, draw_header},
     mem::draw_mem,
     net::draw_net_spark,
@@ -207,6 +207,12 @@ pub struct App {
     // layout switches on its own once the window is too short for the Disks pane.
     force_compact: bool,
 
+    // Which card the GPU pane shows. Tab 0 is the whole-machine aggregate when the
+    // host has more than one card, tabs 1..=n are the cards. It lives here rather
+    // than in the pane so the choice survives refreshes, and it is clamped
+    // whenever the reported card list changes size.
+    gpu_tab: usize,
+
     // Cached title strings — only rebuilt when source values change so the
     // diff renderer can suppress redraws on idle frames.
     header_title: String,
@@ -299,6 +305,7 @@ impl App {
             kill_enabled: false,
             pending_kill: None,
             force_compact: false,
+            gpu_tab: 0,
             header_title: String::new(),
             header_intervals_text: String::new(),
             header_key: (String::new(), false, false, u128::MAX, u128::MAX, u16::MAX),
@@ -325,11 +332,10 @@ impl App {
     /// Pane rects for the current frame. The draw path and the mouse/key hit-testing
     /// paths all go through here so they cannot disagree about where a pane is.
     fn layout(&self, area: Rect) -> AppLayout {
-        let has_gpu = self
-            .last_metrics
-            .as_ref()
-            .and_then(|m| m.gpus.as_ref())
-            .is_some_and(|g| !g.is_empty());
+        let has_gpu = self.last_metrics.as_ref().is_some_and(|m| {
+            m.gpus.as_ref().is_some_and(|g| !g.is_empty())
+                || m.gpus_extra.as_ref().is_some_and(|g| !g.is_empty())
+        });
         compute_layout(area, self.force_compact, has_gpu)
     }
 
@@ -1193,6 +1199,25 @@ impl App {
                         continue;
                     }
 
+                    // GPU card switching: `g` steps to the next card, `G` back,
+                    // and Tab / Shift-Tab do the same for anyone who has not read
+                    // the help screen. Both wrap through the aggregate tab, and
+                    // both are inert on a single-card host. Arrows stay with the
+                    // process table and the per-core scroll.
+                    if matches!(
+                        k.code,
+                        KeyCode::Char('g') | KeyCode::Char('G') | KeyCode::Tab | KeyCode::BackTab
+                    ) && !self.modal_manager.is_active()
+                    {
+                        let cards = gpu_set(self.last_metrics.as_ref());
+                        let tabs = tab_count(&cards);
+                        if tabs > 1 {
+                            let back = matches!(k.code, KeyCode::Char('G') | KeyCode::BackTab);
+                            cycle_tab(&mut self.gpu_tab, &cards, if back { tabs - 1 } else { 1 });
+                        }
+                        continue;
+                    }
+
                     // Per-core scroll via keys (Up/Down/PageUp/PageDown/Home/End)
                     let sz = terminal.size()?;
                     let area = Rect::new(0, 0, sz.width, sz.height);
@@ -1356,6 +1381,20 @@ impl App {
                     if self.selected_process_pid != self.prev_selected_process_pid {
                         self.clear_process_details();
                         self.prev_selected_process_pid = self.selected_process_pid;
+                    }
+
+                    // GPU pane: click a tab label to pick that card, or scroll the
+                    // wheel over the pane to cycle. In compact mode there is no
+                    // strip, so a click anywhere cycles.
+                    if let Some(gpu_area) = layout.gpu {
+                        let cards = gpu_set(self.last_metrics.as_ref());
+                        gpu_handle_mouse(
+                            &mut self.gpu_tab,
+                            m,
+                            gpu_area,
+                            &cards,
+                            layout.mode.is_compact(),
+                        );
                     }
                 }
                 Event::Resize(_, _) => {}
@@ -1783,6 +1822,11 @@ impl App {
             }
         }
 
+        // A driver reload, an agent restart, or talking to a different host can
+        // change how many cards are reported, so the selected card has to be
+        // brought inside the new list rather than left pointing past its end.
+        clamp_tab(&mut self.gpu_tab, &gpu_set(Some(&m)));
+
         // CPU avg history with running sum
         let v = m.cpu_total.clamp(0.0, 100.0).round() as u64;
         let evicted = push_capped(&mut self.cpu_hist, v, 600);
@@ -1891,9 +1935,9 @@ impl App {
         // mode, and absent entirely when the host reports no GPU while compact.
         if let Some(gpu_area) = l.gpu {
             if l.mode.is_compact() {
-                draw_gpu_compact(f, gpu_area, self.last_metrics.as_ref());
+                draw_gpu_compact(f, gpu_area, self.last_metrics.as_ref(), self.gpu_tab);
             } else {
-                draw_gpu(f, gpu_area, self.last_metrics.as_ref());
+                draw_gpu(f, gpu_area, self.last_metrics.as_ref(), self.gpu_tab);
             }
         }
 
@@ -2006,6 +2050,8 @@ mod kill_refresh_tests {
             cpu_per_core: vec![],
             mem_total: 1_000_000,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -2014,6 +2060,7 @@ mod kill_refresh_tests {
             networks: vec![],
             top_processes: pids.iter().map(|p| proc(*p, "victim")).collect(),
             gpus: None,
+            gpus_extra: None,
             process_count: Some(pids.len()),
         });
         app
@@ -2185,6 +2232,8 @@ mod details_close_tests {
             cpu_per_core: vec![],
             mem_total: 1_000_000,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -2198,6 +2247,7 @@ mod details_close_tests {
                 mem_bytes: 1_000,
             }],
             gpus: None,
+            gpus_extra: None,
             process_count: Some(1),
         });
         app.selected_process_pid = Some(pid);
@@ -2263,6 +2313,8 @@ mod kill_watch_tests {
             cpu_per_core: vec![],
             mem_total: 1_000_000,
             mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
             swap_total: 0,
             swap_used: 0,
             hostname: "t".into(),
@@ -2279,6 +2331,7 @@ mod kill_watch_tests {
                 })
                 .collect(),
             gpus: None,
+            gpus_extra: None,
             process_count: Some(pids.len()),
         }
     }
@@ -2396,5 +2449,92 @@ mod kill_watch_tests {
         app.kill_watch.push((me, Instant::now()));
         app.poll_kill_watch();
         assert!(app.kill_watch.is_empty(), "expired watch was not dropped");
+    }
+}
+
+#[cfg(test)]
+mod gpu_tab_tests {
+    use super::*;
+    use socktop_connector::{GpuInfo, Metrics};
+
+    fn card(name: &str) -> GpuInfo {
+        GpuInfo {
+            name: Some(name.into()),
+            vendor: None,
+            utilization: Some(10.0),
+            mem_used: Some(1_000),
+            mem_total: Some(10_000),
+            temp: Some(60.0),
+            temp_slowdown_c: None,
+            temp_mem_max_c: None,
+            power_w: None,
+            power_limit_w: None,
+            fan_pct: None,
+            nvml_index: None,
+            uuid: None,
+        }
+    }
+
+    fn hosts(gpus: Option<Vec<GpuInfo>>, extra: Option<Vec<GpuInfo>>) -> Metrics {
+        Metrics {
+            sampled_at_ms: None,
+            cpu_total: 0.0,
+            cpu_per_core: vec![],
+            mem_total: 1_000_000,
+            mem_used: 0,
+            mem_free: 0,
+            mem_available: 0,
+            swap_total: 0,
+            swap_used: 0,
+            hostname: "t".into(),
+            cpu_temp_c: None,
+            disks: vec![],
+            networks: vec![],
+            top_processes: vec![],
+            gpus,
+            gpus_extra: extra,
+            process_count: Some(0),
+        }
+    }
+
+    /// The three cards the feature is about: primary in `gpus`, the rest in
+    /// `gpus_extra`.
+    fn three_cards() -> Metrics {
+        hosts(Some(vec![card("a")]), Some(vec![card("b"), card("c")]))
+    }
+
+    /// A driver reload, an agent restart or a different host can all change how
+    /// many cards are reported. The selection has to follow the list rather than
+    /// point past its end, which would show nothing.
+    #[test]
+    fn a_shrinking_card_list_pulls_the_selection_back() {
+        let mut app = App::new();
+        app.update_with_metrics(three_cards());
+        app.gpu_tab = 3;
+        app.update_with_metrics(hosts(Some(vec![card("a")]), Some(vec![card("b")])));
+        assert_eq!(app.gpu_tab, 2);
+
+        // Single-card host: the strip is gone, so only the aggregate tab exists.
+        app.update_with_metrics(hosts(Some(vec![card("a")]), None));
+        assert_eq!(app.gpu_tab, 0);
+    }
+
+    /// In compact mode the one-line strip is only reserved when the host really
+    /// does report a card — and a host whose cards arrive only in the new
+    /// `gpus_extra` field counts as a GPU host too.
+    #[test]
+    fn compact_mode_only_reserves_the_strip_for_a_reported_card() {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut app = App::new().with_compact(true);
+
+        app.update_with_metrics(hosts(None, None));
+        assert!(app.layout(area).gpu.is_none());
+
+        // Primary card only, i.e. an agent from before multi-card support.
+        app.update_with_metrics(hosts(Some(vec![card("a")]), None));
+        assert!(app.layout(area).gpu.is_some());
+
+        app.update_with_metrics(hosts(None, Some(vec![card("b"), card("c")])));
+        assert!(app.layout(area).gpu.is_some());
     }
 }

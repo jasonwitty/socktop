@@ -2,6 +2,21 @@
 
 use ratatui::style::Color;
 
+// Memory gauge segments (see ui/mem.rs): used / reclaimable cache / free.
+pub const MEM_USED: Color = Color::Magenta;
+pub const MEM_CACHE: Color = Color::Rgb(102, 153, 204); // steel blue
+pub const MEM_FREE: Color = Color::Rgb(70, 70, 85); // barely-there remainder
+
+// GPU pane (see ui/gpu.rs): bars, labels, and the card tab strip.
+pub const GPU_UTIL: Color = Color::Green;
+pub const GPU_VRAM: Color = Color::LightMagenta;
+pub const GPU_TEXT: Color = Color::Gray;
+// Unselected card tabs sit back; the selected one gets a filled block so the
+// current card is obvious without hunting for it.
+pub const GPU_TAB: Color = Color::DarkGray;
+pub const GPU_TAB_TEXT: Color = Color::Black;
+pub const GPU_TAB_BG: Color = Color::Gray;
+
 // Scrollbar colors (same look as before)
 pub const SB_ARROW: Color = Color::Rgb(170, 170, 180);
 pub const SB_TRACK: Color = Color::Rgb(170, 170, 180);
