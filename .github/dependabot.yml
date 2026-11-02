@@ -1,0 +1,57 @@
+version: 2
+
+updates:
+  # Workspace: socktop, socktop_agent, socktop_connector
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+
+  # The Zellij plugin is deliberately its own Cargo workspace (it targets
+  # wasm32-unknown-unknown and must track a released zellij-tile), so it needs
+  # its own ecosystem entry: Dependabot resolves one lockfile per directory.
+  - package-ecosystem: cargo
+    directory: "/zellij_socktop_plugin"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps(plugin)"
+    labels:
+      - dependencies
+
+  # ... and the wasm smoke-test package, which is a third standalone workspace.
+  - package-ecosystem: cargo
+    directory: "/socktop_wasm_test"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(wasm-test)"
+    labels:
+      - dependencies
+
+  # Keep the workflow pins (actions/checkout, upload-artifact, ...) current too.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    labels:
+      - dependencies

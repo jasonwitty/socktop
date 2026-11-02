@@ -2,18 +2,21 @@
 
 A Zellij plugin that displays real-time system metrics from a socktop agent.
 
+Built against `zellij-tile` 0.45, so it needs a Zellij 0.45.x runtime (plugins
+are version-checked). Zellij plugins target `wasm32-unknown-unknown`.
+
 ## Quick Start
 
 1. **Build the plugin:**
    ```bash
-   cargo build --target wasm32-wasi --release
+   cargo build --target wasm32-unknown-unknown --release
    ```
 
 2. **Install in Zellij:**
    ```bash
    # Copy the WASM file to Zellij plugins directory
    mkdir -p ~/.config/zellij/plugins
-   cp target/wasm32-wasi/release/zellij_socktop_plugin.wasm ~/.config/zellij/plugins/socktop.wasm
+   cp target/wasm32-unknown-unknown/release/zellij_socktop_plugin.wasm ~/.config/zellij/plugins/socktop.wasm
    cp plugin.yaml ~/.config/zellij/plugins/
    ```
 
@@ -92,10 +95,10 @@ This is a scaffold implementation. To make it fully functional:
 
 ```bash
 # Add WASM target
-rustup target add wasm32-wasi
+rustup target add wasm32-unknown-unknown
 
 # Build for WASM
-cargo build --target wasm32-wasi --release
+cargo build --target wasm32-unknown-unknown --release
 
-# The plugin will be at: target/wasm32-wasi/release/zellij_socktop_plugin.wasm
+# The plugin will be at: target/wasm32-unknown-unknown/release/zellij_socktop_plugin.wasm
 ```

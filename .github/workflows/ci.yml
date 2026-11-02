@@ -127,3 +127,58 @@ jobs:
             *.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # RustSec advisories for both lockfiles. Runs on its own so a dependency
+  # advisory fails a dedicated check instead of blocking the matrix build.
+  security:
+    name: Security audit (cargo audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      # RUSTSEC-2025-0134 is the "rustls-pemfile is unmaintained" notice: no
+      # advisory in the code path we use (PEM reading for --tls-ca), no fixed
+      # version exists, and cargo-audit treats it as informational anyway. It is
+      # pinned here so the check output stays signal-only. Revisit if we ever
+      # move to rustls-pki-types.
+      - name: Audit workspace Cargo.lock
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: RUSTSEC-2025-0134
+      - name: Audit zellij plugin Cargo.lock
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: zellij_socktop_plugin
+          ignore: RUSTSEC-2025-0134
+      - name: Audit wasm smoke-test Cargo.lock
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: socktop_wasm_test
+          ignore: RUSTSEC-2025-0134
+
+  # The plugin is not a workspace member and is built for the webassembly
+  # target, so nothing else in CI covers it: without this job its SDK drift
+  # silently rots (as it did between zellij-tile 0.40 and 0.45).
+  plugin:
+    name: Zellij plugin (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cargo fmt (plugin)
+        working-directory: zellij_socktop_plugin
+        run: cargo fmt --all -- --check
+      - name: Build plugin for wasm32-unknown-unknown
+        working-directory: zellij_socktop_plugin
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Check wasm smoke test builds
+        working-directory: socktop_wasm_test
+        run: cargo check --target wasm32-unknown-unknown
