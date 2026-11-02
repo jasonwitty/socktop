@@ -97,6 +97,19 @@ async fn connect_with_ca_and_config(
         .with_root_certificates(root)
         .with_no_client_auth();
 
+    // Every connect_to_agent() opens a brand new TLS session; there is no
+    // long-lived connection whose handshakes we resume. rustls enables an
+    // in-memory store (256 server names) by default, and that store is what
+    // keeps the per-server-name key-exchange prediction used in later
+    // ClientHellos — a prediction written from an *unauthenticated*
+    // ServerHello (GHSA-w44r-93j7-qv28 / RUSTSEC-2026-0349): an on-path
+    // attacker can answer one attempt with a ServerHello that picks X25519 and
+    // every later ClientHello for that name then carries only a classical
+    // share, silently dropping the post-quantum X25519MLKEM768 hybrid. It also
+    // keeps master secrets and resumption PSKs resident for the process
+    // lifetime. Neither buys anything here, so opt out.
+    cfg.resumption = rustls::client::Resumption::disabled();
+
     let mut req = url.into_client_request()?;
 
     // Apply WebSocket protocol configuration
