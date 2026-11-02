@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Security
+
+- **rustls 0.23.35 → 0.23.46**, which closes three advisories that all applied
+  to the pinned version: GHSA-c8m5-c952-6cm4 / RUSTSEC-2026-0346 (`Debug` on
+  client session values leaked the TLS 1.2 master secret / TLS 1.3 resumption
+  PSK), GHSA-h2v8-394m-p7vv / RUSTSEC-2026-0348 (Brotli-encoded certificates
+  could force a 1 GiB allocation before authentication), and
+  GHSA-w44r-93j7-qv28 / RUSTSEC-2026-0349 (an unauthenticated `ServerHello`
+  poisons the per-server-name key-exchange prediction). The first two are not
+  reachable in socktop as configured — no custom session store, `brotli` feature
+  off — but the third is: rustls enables an in-memory session store by default,
+  and the pinned-CA client used it.
+- **TLS session resumption is now disabled in the `wss://` client**
+  (`socktop_connector`), independently of the rustls version. Every
+  `connect_to_agent()` is a fresh session, so the store only ever cost memory
+  (master secrets and resumption PSKs kept for the process lifetime) and
+  carried the poisoned key-share prediction above; the connector now opts out
+  with `Resumption::disabled()`.
+- Pulled the remaining RustSec advisories out of the lockfiles — they were not
+  surfaced as Dependabot alerts at all: `tokio` 1.48 → 1.54.1
+  (RUSTSEC-2026-0386), `h2` 0.4.12 → 0.4.16 (RUSTSEC-2026-0258, unbounded empty
+  DATA frames on the agent's HTTP stack), `anyhow` 1.0.100 → 1.0.103
+  (RUSTSEC-2026-0190), `ratatui-core` 0.1.0 → 0.1.2 to get past `lru` 0.16
+  (RUSTSEC-2026-0253, `LruCache::pop()` use-after-free), `libz-sys` in the
+  Zellij plugin (RUSTSEC-2026-0418) and `anyhow` in `socktop_wasm_test`. All
+  three lockfiles are now clean apart from the informational "rustls-pemfile is
+  unmaintained" notice, which CI pins as an allowed informational warning.
+- **CI now fails on advisories**: a `cargo audit` job runs over all three
+  lockfiles (`Cargo.lock`, `zellij_socktop_plugin/`, `socktop_wasm_test/`),
+  plus a `.github/dependabot.yml` covering the workspace, both standalone wasm
+  workspaces and the workflow pins.
+- `thiserror` 2.0.17 → 2.0.21: clippy on Rust 1.99 turned the `#[from] source:`
+  fields of the connector's error enum into `redundant_field_names` errors, so
+  the existing `clippy -- -D warnings` gate was red on master.
+
+### Zellij plugin
+
+- `zellij-tile` 0.40 → 0.45. The old SDK dragged in `surf → http-types → rand`
+  0.7 and `clap` 3 → `atty`, both flagged and both unfixable inside 0.40;
+  0.45 dropped `surf` and moved to clap 4, so they are simply gone.
+- **The plugin now compiles.** It hadn't for a while: `register_plugin!` has
+  emitted its own `STATE` for ages, so the hand-rolled `static mut STATE` was a
+  duplicate definition, `BTreeMap`/`Key` no longer come from the prelude, and it
+  read a `Metrics::load_avg_1m` field that does not exist. State now lives in
+  `self` (no `static mut`), key handling uses `BareKey`, and the build target is
+  `wasm32-unknown-unknown` (not `wasm32-wasi`, which Zellij never used).
+  A CI job builds it so SDK drift can't rot it again. Plugins built against
+  0.45 need Zellij 0.45.
+
 ### TUI
 
 - **`--no-kill` flag and `SOCKTOP_NO_KILL` env var** disable the local
