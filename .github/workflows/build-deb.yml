@@ -85,8 +85,9 @@ jobs:
           sudo apt-get update
           # No libdrm:arm64 here on purpose — the arm64 agent .deb is built with
           # --no-default-features (no `gpu` feature, no gfxinfo, no libdrm), because
-          # the only 64-bit Pi hardware in the fleet has no usable GPU. See P6 of
-          # docs/PERFORMANCE_REVIEW.md.
+          # the only 64-bit Pi hardware in the fleet has no usable GPU. aarch64 with a
+          # real GPU (Jetson) is a local build with the feature, see
+          # docs/cross-compiling.md.
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Install cross-compilation tools (ARMhf)

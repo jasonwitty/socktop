@@ -20,8 +20,8 @@ NoNewPrivileges=true
 #
 # Measured on a Pi 5 with one client at the TUI's default cadence: about 0.4% of
 # one core and 5.4 MB resident. The numbers below are not that; they are the
-# ceiling a mistake would hit — a stuck poll, or a client flooding `get_processes`
-# (see docs/SECURITY_REVIEW.md S3), can now cost a quarter of one core and no more.
+# ceiling a mistake would hit: a stuck poll, or a client flooding `get_processes`
+# faster than the TUI ever would, can now cost a quarter of one core and no more.
 # At the default cadence nothing near these is ever reached, so the limits are not
 # felt in normal use.
 #
