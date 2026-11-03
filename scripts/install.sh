@@ -87,7 +87,23 @@ fi
 
 # ---------- build ----------
 say "Building release binaries (this can take a while on SBCs)"
-( cd "$SRC_DIR" && cargo build --release -p socktop -p socktop_agent )
+(
+  cd "$SRC_DIR" && cargo build --release -p socktop
+  # The agent's default features include `gpu` (gfxinfo), which links libdrm and
+  # libdrm_amdgpu at build time. On 32-bit ARM and RISC-V that feature cannot build
+  # at all; on a 64-bit Pi it would need libdrm-dev installed to link two libraries
+  # the hardware never uses and would run the GPU probe on the first process-detail
+  # request. Build without it there, which is what the arm64 .deb ships.
+  case "$(uname -m)" in
+    aarch64|armv7*|armhf*|riscv64*)
+      say "Building the agent without GPU support (same as the arm64/armhf .deb)"
+      cargo build --release -p socktop_agent --no-default-features
+      ;;
+    *)
+      cargo build --release -p socktop_agent
+      ;;
+  esac
+)
 CLIENT="$SRC_DIR/target/release/socktop"
 AGENT="$SRC_DIR/target/release/socktop_agent"
 

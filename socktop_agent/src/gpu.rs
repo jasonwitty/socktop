@@ -29,11 +29,11 @@ pub async fn collect_all_gpus() -> Option<Vec<GpuMetrics>> {
 #[cfg(feature = "gpu")]
 mod worker {
     use super::GpuMetrics;
-    use once_cell::sync::OnceCell;
+    use std::sync::OnceLock;
     use std::sync::mpsc;
 
     type Reply = tokio::sync::oneshot::Sender<Option<Vec<GpuMetrics>>>;
-    static TX: OnceCell<mpsc::Sender<Reply>> = OnceCell::new();
+    static TX: OnceLock<mpsc::Sender<Reply>> = OnceLock::new();
 
     pub async fn collect() -> Option<Vec<GpuMetrics>> {
         let tx = TX.get_or_init(spawn);

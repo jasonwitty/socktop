@@ -16,6 +16,26 @@ User=socktop
 Group=socktop
 NoNewPrivileges=true
 
+# Resource limits, so the agent is something you install and forget.
+#
+# Measured on a Pi 5 with one client at the TUI's default cadence: about 0.4% of
+# one core and 5.4 MB resident. The numbers below are not that; they are the
+# ceiling a mistake would hit: a stuck poll, or a client flooding `get_processes`
+# faster than the TUI ever would, can now cost a quarter of one core and no more.
+# At the default cadence nothing near these is ever reached, so the limits are not
+# felt in normal use.
+#
+# MemoryHigh is where the kernel starts reclaiming aggressively, MemoryMax where a
+# cgroup kill happens: a leak becomes a restart, not a swapped Pi.
+# IOSchedulingClass=idle is appropriate because the only disk I/O the agent does is
+# `journalctl` for the process-detail view, which should yield to everything else on
+# an SD card.
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryHigh=32M
+MemoryMax=48M
+
 # Security hardening
 PrivateTmp=true
 ProtectSystem=strict

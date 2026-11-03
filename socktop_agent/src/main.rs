@@ -29,53 +29,55 @@ fn arg_value(name: &str) -> Option<String> {
     None
 }
 
-fn main() -> anyhow::Result<()> {
-    // Install rustls crypto provider before any TLS operations
-    // This is required when using axum-server's tls-rustls feature
-    rustls::crypto::aws_lc_rs::default_provider()
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Name the crypto provider before any TLS operation. `rustls` is compiled
+    // with exactly one provider (ring, from the workspace manifest), so this is
+    // belt-and-braces: it says out loud which one, and it stops compiling if the
+    // workspace ever switches.
+    rustls::crypto::ring::default_provider()
         .install_default()
         .ok(); // Ignore error if already installed
 
     #[cfg(feature = "logging")]
     tracing_subscriber::fmt::init();
 
-    // Configure Tokio runtime with optimized thread pool for reduced overhead.
+    // Runtime shape: one worker thread, no pool.
     //
-    // The agent is primarily I/O-bound (WebSocket, /proc file reads, sysinfo)
-    // with no CPU-intensive or blocking operations, so a smaller thread pool
-    // is beneficial:
+    // The agent is I/O-bound (WebSocket, /proc reads, sysinfo) and every request
+    // path funnels through locks that a poll already holds, so a second worker
+    // thread cannot overlap useful work — it only adds a hand-off between threads
+    // and costs a stack. Measured on a Pi 5: the two worker threads were the
+    // process's largest single chunk of private memory, 1.6 MB of the 3.9 MB
+    // resident at startup (8 MB of virtual each; the kernel reuses their idle
+    // stacks, so resident cost shows up mainly as RSS, not VmPeak).
     //
-    // Benefits:
-    //   - Lower memory footprint (~1-2MB per thread saved)
-    //   - Reduced context switching overhead
-    //   - Fewer idle threads consuming resources
-    //   - Better for resource-constrained systems
+    // The blocking pool stays, and the two slow collectors still move to it: the
+    // journalctl subprocess (12 ms wall / 10 ms child CPU for 100 entries on a
+    // Pi) and NVML. `spawn_blocking` works on this runtime.
     //
-    // Trade-offs:
-    //   - Slightly reduced throughput under very high concurrent connections
-    //   - Could introduce latency if blocking operations are added (don't do this!)
-    //
-    // Default: 2 threads (sufficient for typical workloads with 1-10 clients)
-    // Override: Set SOCKTOP_WORKER_THREADS=4 to use more threads if needed
-    //
-    // Note: Default Tokio uses num_cpus threads which is excessive for this workload.
-
+    // Override: SOCKTOP_WORKER_THREADS=N switches back to a multi-thread runtime
+    // with N workers, for a deployment with many clients on a many-core box.
     let worker_threads = std::env::var("SOCKTOP_WORKER_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2)
-        .clamp(1, 16); // Ensure 1-16 threads
+        .map(|n| n.clamp(1, 16));
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(worker_threads)
-        .thread_name("socktop-agent")
-        .enable_all()
-        .build()?;
+    let runtime = match worker_threads {
+        Some(n) => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(n)
+            .thread_name("socktop-agent")
+            .enable_all()
+            .build()?,
+        None => tokio::runtime::Builder::new_current_thread()
+            .thread_name("socktop-agent")
+            .enable_all()
+            .build()?,
+    };
 
     runtime.block_on(async_main())
 }
 
-async fn async_main() -> anyhow::Result<()> {
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Version flag (print and exit). Keep before heavy initialization.
     if arg_flag("--version") || arg_flag("-V") {
         println!("socktop_agent {}", env!("CARGO_PKG_VERSION"));

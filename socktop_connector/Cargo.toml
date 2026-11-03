@@ -22,7 +22,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 # WebSocket client - only for non-WASM targets
 tokio-tungstenite = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "macros", "time", "net", "sync", "io-util"] }
 futures-util = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
@@ -33,7 +33,7 @@ js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "ErrorEvent", "CloseEvent", "BinaryType", "Window", "console"], optional = true }
 
 # TLS support
-rustls = { version = "0.23", features = ["ring"], optional = true }
+rustls = { workspace = true, optional = true }
 rustls-pemfile = { version = "2.1", optional = true }
 
 # Serialization - always available

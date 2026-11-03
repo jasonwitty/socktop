@@ -4,6 +4,12 @@ This guide explains how to cross-compile the socktop_agent on various host syste
 
 **Note:** GPU monitoring support is not available on ARMv7 (32-bit) and RISC-V architectures due to library limitations. When building for these platforms, the `--no-default-features` flag must be used to disable GPU support.
 
+The published **arm64** `.deb` is built with `--no-default-features` too. GPU
+support is not *broken* on aarch64 — it links `libdrm` and `libdrm_amdgpu` at
+build time, so the package would Depend on two libraries a Raspberry Pi never uses
+and run the GPU probe on the first process-detail request. If you are on aarch64
+hardware with a real GPU (Jetson), build with the feature as shown below.
+
 ## Cross-Compilation Host Setup
 
 Choose your host operating system:
@@ -22,7 +28,10 @@ Install the cross-compilation toolchain for your target Raspberry Pi architectur
 ```bash
 # For 64-bit Raspberry Pi (aarch64)
 sudo apt update
-sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdrm-dev:arm64
+sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+# Only if you want the agent's `gpu` feature (gfxinfo/libdrm) in an aarch64 build:
+sudo apt install libdrm-dev:arm64 libdrm-amdgpu1:arm64
 
 # For 32-bit Raspberry Pi (armv7)
 # Note: GPU support not available on armv7
@@ -64,8 +73,9 @@ sudo pacman -S base-devel
 
 # For 64-bit Raspberry Pi (aarch64)
 sudo pacman -S aarch64-linux-gnu-gcc
-# Install libdrm for aarch64 using an AUR helper (e.g., yay, paru)
-yay -S aarch64-linux-gnu-libdrm
+# Only if you want the agent's `gpu` feature (gfxinfo/libdrm) in an aarch64 build;
+# install libdrm for aarch64 using an AUR helper (e.g., yay, paru):
+#   yay -S aarch64-linux-gnu-libdrm
 
 # For 32-bit Raspberry Pi (armv7)
 # Note: GPU support not available on armv7
@@ -135,7 +145,10 @@ The recommended approach for Windows is to use Windows Subsystem for Linux (WSL2
 After setting up your environment, build the socktop_agent for your target Raspberry Pi:
 
 ```bash
-# For 64-bit Raspberry Pi (with GPU support)
+# For 64-bit Raspberry Pi (no GPU support — what the arm64 .deb ships)
+cargo build --release --target aarch64-unknown-linux-gnu -p socktop_agent --no-default-features
+
+# For aarch64 hardware with a usable GPU (Jetson); needs libdrm for the target
 cargo build --release --target aarch64-unknown-linux-gnu -p socktop_agent
 
 # For 32-bit Raspberry Pi (without GPU support)

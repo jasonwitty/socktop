@@ -12,15 +12,16 @@ pub type SharedComponents = Arc<Mutex<Components>>;
 pub type SharedDisks = Arc<Mutex<Disks>>;
 pub type SharedNetworks = Arc<Mutex<Networks>>;
 
+/// Per-PID CPU totals (milliseconds, as sysinfo reports them) as of the previous
+/// `get_processes` poll, plus the machine's total CPU at that moment. Both live
+/// as long as the agent does: the poll differences what it reads against this map
+/// and writes the new totals straight back, so its capacity is allocated once,
+/// and PIDs that have gone away are pruned at the end of every poll.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct ProcCpuTracker {
     pub last_total: u64,
-    pub last_per_pid: HashMap<u32, u64>,
-    /// PID → process name cache. Mirrors the non-Linux `ProcessCache.names`.
-    /// On a Pi with ~150-300 mostly-stable processes this avoids re-allocating
-    /// the same `String`s on every processes poll (~once per 1.5s).
-    pub names: HashMap<u32, String>,
+    pub last_per_pid: HashMap<sysinfo::Pid, u64>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -64,9 +65,15 @@ pub struct AppState {
     pub gpu_present: Arc<AtomicBool>,
 
     // Lightweight on-demand caches (TTL based) to cap CPU under bursty polling.
-    pub cache_metrics: Arc<Mutex<CacheEntry<crate::types::Metrics>>>,
-    pub cache_disks: Arc<Mutex<CacheEntry<Vec<crate::types::DiskInfo>>>>,
-    pub cache_processes: Arc<Mutex<CacheEntry<crate::types::ProcessesPayload>>>,
+    // They hold the frame that goes on the wire, not the decoded value. The
+    // collectors used to cache decoded payloads, and every request then cloned
+    // the payload out and re-encoded it, so a cache cost exactly as much CPU as a
+    // miss: a `get_processes` hit was 0.17 ms of agent CPU here, about 1 ms on a
+    // Pi, and a clone of the payload is one String per process. Cloning a
+    // `Message` is a refcount bump (Text is Utf8Bytes, Binary is Bytes).
+    pub cache_metrics: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
+    pub cache_disks: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
+    pub cache_processes: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
 
     // Process detail caches (per-PID)
     pub cache_process_metrics:

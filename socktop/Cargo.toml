@@ -13,7 +13,7 @@ repository = "https://github.com/jasonwitty/socktop"
 # socktop connector for agent communication
 socktop_connector = { version = "1.60.1", path = "../socktop_connector" }
 
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "signal", "sync", "io-util"] }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
