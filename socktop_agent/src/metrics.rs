@@ -12,7 +12,6 @@ use once_cell::sync::OnceCell;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 #[cfg(feature = "logging")]
@@ -163,14 +162,11 @@ fn refresh_components_if_stale(components: &mut sysinfo::Components) {
     }
 }
 
-// Static caches for unchanging data
-static HOSTNAME: OnceCell<String> = OnceCell::new();
-struct NetworkNameCache {
-    names: Vec<String>,
-    infos: Vec<NetworkInfo>,
-}
-static NETWORK_CACHE: OnceCell<Mutex<NetworkNameCache>> = OnceCell::new();
-static CPU_VEC: OnceCell<Mutex<Vec<f32>>> = OnceCell::new();
+// (There used to be three statics here: `HOSTNAME`, `CPU_VEC` and
+// `NETWORK_CACHE`. Each existed so an allocation could be reused between calls,
+// and each handed its value over with a `.clone()` that allocated a fresh one
+// anyway — a mutex and a static for nothing. `AppState::hostname` is already
+// owned, and interface and per-core vectors are built straight into the payload.)
 
 // Collect only fast-changing metrics (CPU/mem/net + optional temps/gpus).
 pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
@@ -183,18 +179,9 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         warn!("sysinfo selective refresh panicked: {_e:?}");
     }
 
-    // Get or initialize hostname once
-    let hostname = HOSTNAME.get_or_init(|| state.hostname.clone()).clone();
-
-    // Reuse CPU vector to avoid allocation
+    let hostname = state.hostname.clone();
     let cpu_total = sys.global_cpu_usage();
-    let cpu_per_core = {
-        let vec_lock = CPU_VEC.get_or_init(|| Mutex::new(Vec::with_capacity(32)));
-        let mut vec = vec_lock.lock().unwrap();
-        vec.clear();
-        vec.extend(sys.cpus().iter().map(|c| c.cpu_usage()));
-        vec.clone() // Still need to clone but the allocation is reused
-    };
+    let cpu_per_core = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
 
     let mem_total = sys.total_memory();
     let mem_used = mem_total.saturating_sub(sys.available_memory());
@@ -229,45 +216,18 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         val
     };
 
-    // Networks with reusable name cache
+    // Interfaces are few (a handful per host) and this runs a few times a
+    // second, so the list is built straight into the payload.
     let networks = {
         let mut nets = state.networks.lock().await;
         nets.refresh(false);
-
-        // Get or initialize network cache
-        let cache = NETWORK_CACHE.get_or_init(|| {
-            Mutex::new(NetworkNameCache {
-                names: Vec::new(),
-                infos: Vec::with_capacity(4), // Most systems have few network interfaces
-            })
-        });
-        let mut cache = cache.lock().unwrap();
-
-        // Detect a topology change without allocating: compare lengths first,
-        // then zip and walk. Only on a real diff do we materialize the new
-        // names list. Was: `nets.keys().map(to_string).collect::<Vec<_>>()`
-        // every tick — a fresh Vec<String> just to compare.
-        let topology_changed = cache.names.len() != nets.keys().count()
-            || cache
-                .names
-                .iter()
-                .zip(nets.keys())
-                .any(|(cached, current)| cached.as_str() != current.as_str());
-        if topology_changed {
-            cache.names.clear();
-            cache.names.extend(nets.keys().map(|n| n.to_string()));
-        }
-
-        // Reuse NetworkInfo objects
-        cache.infos.clear();
-        for (name, data) in nets.iter() {
-            cache.infos.push(NetworkInfo {
-                name: name.to_string(), // We'll still clone but avoid Vec reallocation
+        nets.iter()
+            .map(|(name, data)| NetworkInfo {
+                name: name.to_string(),
                 received: data.total_received(),
                 transmitted: data.total_transmitted(),
-            });
-        }
-        cache.infos.clone()
+            })
+            .collect()
     };
 
     // GPUs: negative-probe cache short-circuits GPU-less hosts; otherwise the
@@ -1136,6 +1096,13 @@ pub async fn collect_journal_entries(pid: u32) -> Result<JournalResponse, String
         .args([
             &format!("_PID={pid}"),
             "--output=json",
+            // Ask for the fields this parser reads. `--output=json` without it
+            // emits every field of every entry — on a Pi 300 lines of journal is
+            // 365 KB, with this 155 KB — and serde_json has to parse all of it to
+            // pick seven values. Meta fields such as __REALTIME_TIMESTAMP are
+            // always emitted, so the timestamp keeps working. Needs systemd 236+,
+            // and every supported Pi OS ships far newer.
+            "--output-fields=MESSAGE,PRIORITY,_PID,_COMM,_UID,_GID,_SYSTEMD_UNIT",
             "--lines=100",
             "--no-pager",
         ])
