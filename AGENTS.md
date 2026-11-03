@@ -99,6 +99,20 @@ cargo test --workspace
 - **The arm64 `.deb` is built `--no-default-features`.** `gfxinfo` links libdrm/libdrm_amdgpu at build
   time, so a GPU-enabled arm64 package Depends on two libraries no Pi uses and runs the GPU probe on the
   first process-detail request. aarch64 with a real GPU (Jetson) is a local build with the feature.
+- **`without_tasks()` is also what lets sysinfo reuse its per-process stat fd**, and that is worth knowing
+  before reading a soak's fd count. sysinfo 0.37 keeps `stat_file: Option<FileCounter>` on each live
+  process entry, so `/proc/<pid>/stat` stays open between refreshes and is re-read instead of re-opened;
+  that is part of the 1574 → 692 syscalls/request drop. The cost is that the agent holds **roughly one fd
+  per live process** (180 fds against 173 processes on the Pi) rather than ~4, and sysinfo raises the
+  process's `RLIMIT_NOFILE` soft limit to the hard limit on the first refresh (1024 → 524288) to afford
+  it. It is budgeted (`FileCounter::new` refuses past half the fd limit) and self-pruning: the count held
+  at 181–182 through a 138k-reply flood and 600 short-lived processes. So a large fd count is not a leak
+  on its own; compare it against the number of live processes.
+- **`MemoryHigh=`/`MemoryMax=` in the unit files do nothing where the memory controller is missing.** This
+  Pi 5 boots with `cgroup_disable=memory`, so `cgroup.controllers` under `/sys/fs/cgroup` is only
+  `cpuset cpu io pids`, systemd accepts the properties *silently*, and no `memory.max` file appears.
+  `CPUQuota=` is applied there (`cpu.max = 25000 100000`) and was seen holding a flooded agent at a
+  quarter core. Check `cgroup.controllers` on a host before believing a memory limit protects it.
 - Building on a Pi over ssh: `export PATH=$HOME/.cargo/bin:$PATH` — a non-login shell has no cargo.
 - **Measured and left alone** (don't re-litigate without new data): dropping sysinfo from the TUI
   (−111 KB binary, cold `cargo build -p socktop` 30.9 s vs 31.2 s — no build-time win, and the kill path
