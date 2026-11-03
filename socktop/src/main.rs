@@ -158,7 +158,12 @@ pub(crate) fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Pars
     })
 }
 
-#[tokio::main]
+// One worker thread. `App::run` is a single event loop — there is no `tokio::spawn`
+// anywhere in the client — so a worker pool only buys the TUI cross-thread
+// wake-ups and a stack per extra thread (the multi-thread runtime ran four).
+// Timers, stdin and the socket all stay concurrent as tasks on this one thread;
+// the IO driver thread is still there. Same shape as the agent.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parsed = match parse_args(env::args()) {
         Ok(v) => v,
