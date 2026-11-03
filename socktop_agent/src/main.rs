@@ -29,7 +29,7 @@ fn arg_value(name: &str) -> Option<String> {
     None
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Name the crypto provider before any TLS operation. `rustls` is compiled
     // with exactly one provider (ring, from the workspace manifest), so this is
     // belt-and-braces: it says out loud which one, and it stops compiling if the
@@ -77,7 +77,7 @@ fn main() -> anyhow::Result<()> {
     runtime.block_on(async_main())
 }
 
-async fn async_main() -> anyhow::Result<()> {
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Version flag (print and exit). Keep before heavy initialization.
     if arg_flag("--version") || arg_flag("-V") {
         println!("socktop_agent {}", env!("CARGO_PKG_VERSION"));

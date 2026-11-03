@@ -6,7 +6,6 @@ use crate::types::{
     DetailedProcessInfo, DiskInfo, JournalEntry, JournalResponse, LogLevel, Metrics, NetworkInfo,
     ProcessInfo, ProcessMetricsResponse, ProcessesPayload,
 };
-use once_cell::sync::OnceCell;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -80,7 +79,7 @@ fn get_cpu_times_us(_pid: u32) -> (u64, u64) {
 }
 // Runtime toggles (read once)
 fn gpu_enabled() -> bool {
-    static ON: OnceCell<bool> = OnceCell::new();
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_GPU")
             .map(|v| v != "0")
@@ -88,7 +87,7 @@ fn gpu_enabled() -> bool {
     })
 }
 fn temp_enabled() -> bool {
-    static ON: OnceCell<bool> = OnceCell::new();
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_TEMP")
             .map(|v| v != "0")
@@ -99,7 +98,7 @@ fn temp_enabled() -> bool {
 // TTL knobs read once at first use, then cached. These hit the hot polling
 // paths (every 250ms-1.5s), so re-reading via libc getenv per call is wasted.
 pub(crate) fn metrics_ttl_ms() -> u64 {
-    static V: OnceCell<u64> = OnceCell::new();
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_METRICS_TTL_MS")
             .ok()
@@ -108,7 +107,7 @@ pub(crate) fn metrics_ttl_ms() -> u64 {
     })
 }
 pub(crate) fn disks_ttl_ms() -> u64 {
-    static V: OnceCell<u64> = OnceCell::new();
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_DISKS_TTL_MS")
             .ok()
@@ -117,7 +116,7 @@ pub(crate) fn disks_ttl_ms() -> u64 {
     })
 }
 pub(crate) fn processes_ttl_ms() -> u64 {
-    static V: OnceCell<u64> = OnceCell::new();
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
             .ok()
@@ -127,7 +126,7 @@ pub(crate) fn processes_ttl_ms() -> u64 {
 }
 #[cfg(not(target_os = "linux"))]
 fn name_cache_cleanup_threshold() -> usize {
-    static V: OnceCell<usize> = OnceCell::new();
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_NAME_CACHE_CLEANUP_THRESHOLD")
             .ok()

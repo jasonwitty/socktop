@@ -22,7 +22,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 # WebSocket client - only for non-WASM targets
 tokio-tungstenite = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "macros", "time", "net", "sync", "io-util"] }
 futures-util = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 

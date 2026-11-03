@@ -8,7 +8,10 @@ members = [
 
 [workspace.dependencies]
 # async + streams
-tokio = { version = "1", features = ["full"] }
+# Features are decided by each member, not here: `full` turns on every tokio
+# subsystem for every crate that asks for tokio, and `cargo install socktop` then
+# builds a TUI that never uses any of them. The agent already listed its own.
+tokio = { version = "1" }
 futures-util = "0.3"
 anyhow = "1.0"
 
