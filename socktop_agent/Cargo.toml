@@ -28,8 +28,11 @@ gfxinfo = { version = "0.1.2", optional = true }
 # Same version gfxinfo already pulls in, so this adds no new build cost.
 nvml-wrapper = { version = "0.10", optional = true }
 once_cell = "1.19"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
+# `tls-rustls` would add the aws-lc-rs provider on top of the workspace's
+# ring; `-no-provider` gives the same server TLS support and lets the
+# workspace decide which provider to compile.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { workspace = true }
 rustls-pemfile = "2.1"
 rcgen = "0.13"
 anyhow = "1"

@@ -39,7 +39,11 @@ dirs-next = "2"
 flate2 = "1.0"
 
 # TLS
-rustls = { version = "0.23", features = ["ring"] }
+# One crypto provider for the whole workspace. rustls' default feature set
+# selects aws-lc-rs, and the agent used to ask for it explicitly on top of
+# this "ring" line, so both providers were compiled into every binary that
+# links rustls (see the agent manifest for the size numbers).
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring", "logging"] }
 rustls-pemfile = "2.1"
 
 [profile.release]
