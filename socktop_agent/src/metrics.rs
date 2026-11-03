@@ -13,7 +13,6 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
 use std::sync::Mutex;
-use std::time::Duration as StdDuration;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 #[cfg(feature = "logging")]
@@ -100,7 +99,7 @@ fn temp_enabled() -> bool {
 
 // TTL knobs read once at first use, then cached. These hit the hot polling
 // paths (every 250ms-1.5s), so re-reading via libc getenv per call is wasted.
-fn metrics_ttl_ms() -> u64 {
+pub(crate) fn metrics_ttl_ms() -> u64 {
     static V: OnceCell<u64> = OnceCell::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_METRICS_TTL_MS")
@@ -109,7 +108,7 @@ fn metrics_ttl_ms() -> u64 {
             .unwrap_or(250)
     })
 }
-fn disks_ttl_ms() -> u64 {
+pub(crate) fn disks_ttl_ms() -> u64 {
     static V: OnceCell<u64> = OnceCell::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_DISKS_TTL_MS")
@@ -118,8 +117,7 @@ fn disks_ttl_ms() -> u64 {
             .unwrap_or(1_000)
     })
 }
-#[cfg(target_os = "linux")]
-fn processes_ttl_ms() -> u64 {
+pub(crate) fn processes_ttl_ms() -> u64 {
     static V: OnceCell<u64> = OnceCell::new();
     *V.get_or_init(|| {
         std::env::var("SOCKTOP_AGENT_PROCESSES_TTL_MS")
@@ -176,15 +174,6 @@ static CPU_VEC: OnceCell<Mutex<Vec<f32>>> = OnceCell::new();
 
 // Collect only fast-changing metrics (CPU/mem/net + optional temps/gpus).
 pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
-    let ttl = StdDuration::from_millis(metrics_ttl_ms());
-    {
-        let cache = state.cache_metrics.lock().await;
-        if cache.is_fresh(ttl)
-            && let Some(c) = cache.get()
-        {
-            return c.clone();
-        }
-    }
     let mut sys = state.sys.lock().await;
     if let Err(_e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         sys.refresh_cpu_usage();
@@ -310,7 +299,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    let metrics = Metrics {
+    Metrics {
         sampled_at_ms,
         cpu_total,
         cpu_per_core,
@@ -324,12 +313,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
         networks,
         top_processes: Vec::new(),
         gpus,
-    };
-    {
-        let mut cache = state.cache_metrics.lock().await;
-        cache.set(metrics.clone());
     }
-    metrics
 }
 
 /// Best-effort parent-disk name for a partition device name:
@@ -376,15 +360,6 @@ fn is_partition_heuristic(bare: &str) -> bool {
 
 // Cached disks
 pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
-    let ttl = StdDuration::from_millis(disks_ttl_ms());
-    {
-        let cache = state.cache_disks.lock().await;
-        if cache.is_fresh(ttl)
-            && let Some(v) = cache.get()
-        {
-            return v.clone();
-        }
-    }
     let mut disks_list = state.disks.lock().await;
     disks_list.refresh(false); // don't drop missing disks
 
@@ -538,10 +513,6 @@ pub async fn collect_disks(state: &AppState) -> Vec<DiskInfo> {
             disks.push(partition);
         }
     }
-    {
-        let mut cache = state.cache_disks.lock().await;
-        cache.set(disks.clone());
-    }
     disks
 }
 
@@ -566,18 +537,10 @@ fn read_total_jiffies() -> io::Result<u64> {
 }
 
 /// Collect all processes (Linux): CPU% is the delta of the per-process CPU totals
-/// sysinfo already parsed. Sorting moved to the client.
+/// sysinfo already parsed. Sorting moved to the client; the TTL cache lives in
+/// `ws.rs`, which caches the encoded frame rather than the decoded rows.
 #[cfg(target_os = "linux")]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    let ttl = StdDuration::from_millis(processes_ttl_ms());
-    {
-        let cache = state.cache_processes.lock().await;
-        if cache.is_fresh(ttl)
-            && let Some(c) = cache.get()
-        {
-            return c.clone();
-        }
-    }
     // Reuse shared System to avoid reallocation. What this refresh has to yield:
     // name, RSS, parent (the detail endpoint reads the same table) and the
     // process's lifetime CPU total.
@@ -655,31 +618,15 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     drop(tracker);
     drop(sys_guard);
 
-    let payload = ProcessesPayload {
+    ProcessesPayload {
         process_count: total_count,
         top_processes: procs,
-    };
-    {
-        let mut cache = state.cache_processes.lock().await;
-        cache.set(payload.clone());
     }
-    payload
 }
 
 /// Collect all processes (non-Linux): optimized for reduced allocations and selective updates.
 #[cfg(not(target_os = "linux"))]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
-    // Serve from cache if fresh
-    {
-        let cache = state.cache_processes.lock().await;
-        if cache.is_fresh(StdDuration::from_millis(2_000)) {
-            // Use fixed TTL for cache check
-            if let Some(c) = cache.get() {
-                return c.clone();
-            }
-        }
-    }
-
     // Single efficient refresh with optimized CPU collection
     let (total_count, procs) = {
         let mut sys = state.sys.lock().await;
@@ -774,16 +721,10 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
         (total_count, std::mem::take(&mut proc_cache.reusable_vec))
     };
 
-    let payload = ProcessesPayload {
+    ProcessesPayload {
         process_count: total_count,
         top_processes: procs,
-    };
-
-    {
-        let mut cache = state.cache_processes.lock().await;
-        cache.set(payload.clone());
     }
-    payload
 }
 
 /// Children of a PID, from the process table the last `get_processes` poll

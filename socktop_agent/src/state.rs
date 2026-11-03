@@ -65,9 +65,15 @@ pub struct AppState {
     pub gpu_present: Arc<AtomicBool>,
 
     // Lightweight on-demand caches (TTL based) to cap CPU under bursty polling.
-    pub cache_metrics: Arc<Mutex<CacheEntry<crate::types::Metrics>>>,
-    pub cache_disks: Arc<Mutex<CacheEntry<Vec<crate::types::DiskInfo>>>>,
-    pub cache_processes: Arc<Mutex<CacheEntry<crate::types::ProcessesPayload>>>,
+    // They hold the frame that goes on the wire, not the decoded value. The
+    // collectors used to cache decoded payloads, and every request then cloned
+    // the payload out and re-encoded it, so a cache cost exactly as much CPU as a
+    // miss: a `get_processes` hit was 0.17 ms of agent CPU here, about 1 ms on a
+    // Pi, and a clone of the payload is one String per process. Cloning a
+    // `Message` is a refcount bump (Text is Utf8Bytes, Binary is Bytes).
+    pub cache_metrics: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
+    pub cache_disks: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
+    pub cache_processes: Arc<Mutex<CacheEntry<axum::extract::ws::Message>>>,
 
     // Process detail caches (per-PID)
     pub cache_process_metrics:

@@ -7,32 +7,100 @@ use axum::{
 };
 use flate2::{Compression, write::GzEncoder};
 use futures_util::StreamExt;
-use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::Duration as StdDuration;
 use tokio::sync::Mutex;
 
-use crate::metrics::{collect_disks, collect_fast_metrics, collect_processes_all};
+use crate::metrics::{
+    collect_disks, collect_fast_metrics, collect_processes_all, disks_ttl_ms, metrics_ttl_ms,
+    processes_ttl_ms,
+};
 use crate::proto::pb;
-use crate::state::AppState;
+use crate::state::{AppState, CacheEntry};
 
 // Payloads at or below this many bytes are sent as-is; larger ones are gzipped.
 const COMPRESSION_THRESHOLD: usize = 768;
 
-// Reusable buffer for compression to avoid allocations
-struct CompressionCache {
-    processes_vec: Vec<pb::Process>,
-}
-
-impl CompressionCache {
-    fn new() -> Self {
-        Self {
-            processes_vec: Vec::with_capacity(512), // Typical process count
-        }
+/// The frame for a JSON payload: a Text frame when it is small enough that gzip
+/// costs more than it saves, a gzipped Binary frame otherwise. The client tells
+/// them apart by frame type and the gzip magic, so the rule has to stay.
+fn json_frame<T: serde::Serialize>(value: &T) -> Message {
+    let json = serde_json::to_string(value).expect("serialize");
+    if json.len() <= COMPRESSION_THRESHOLD {
+        return Message::Text(json);
+    }
+    // A new encoder per frame so the gzip headers are complete.
+    let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+    match enc.write_all(json.as_bytes()).and_then(|_| enc.finish()) {
+        Ok(bin) => Message::Binary(bin),
+        Err(_) => Message::Binary(json.into_bytes()),
     }
 }
 
-static COMPRESSION_CACHE: OnceCell<Mutex<CompressionCache>> = OnceCell::new();
+/// The frame for the process list: protobuf rows, gzipped under the same size
+/// rule as JSON. Encoding can only fail if the buffer cannot grow, and the old
+/// code closed the socket in that case; returning the Close frame here does the
+/// same thing, since `respond_frame` sends whatever this hands back.
+fn processes_frame(payload: crate::types::ProcessesPayload) -> Message {
+    let msg = pb::Processes {
+        process_count: payload.process_count as u64,
+        rows: payload
+            .top_processes
+            .into_iter()
+            .map(|p| pb::Process {
+                pid: p.pid,
+                name: p.name,
+                cpu_usage: p.cpu_usage,
+                mem_bytes: p.mem_bytes,
+            })
+            .collect(),
+    };
+    let mut buf = Vec::with_capacity(8 * 1024);
+    if prost::Message::encode(&msg, &mut buf).is_err() {
+        return Message::Close(None);
+    }
+    if buf.len() <= COMPRESSION_THRESHOLD {
+        return Message::Binary(buf);
+    }
+    let mut encoder = GzEncoder::new(Vec::with_capacity(buf.len()), Compression::fast());
+    match encoder.write_all(&buf).and_then(|_| encoder.finish()) {
+        Ok(compressed) => Message::Binary(compressed),
+        Err(_) => Message::Binary(buf),
+    }
+}
+
+/// One home for "answer this request from a TTL cache of the encoded frame":
+/// collect and encode on a miss, hand out a `Message` clone on a hit.
+///
+/// The caches used to hold decoded payloads and the request path re-encoded them
+/// every time, so a hit cost the same as a miss: for `get_processes` that was a
+/// clone of the payload (one String per process), a fresh 8 KB encode buffer,
+/// prost, and gzip — 0.17 ms of agent CPU per hit on a desktop, around 1 ms on a
+/// Pi, which is how ten unauthenticated clients could pin a core. The frame is
+/// now decided once per TTL and a hit is a refcount bump and a write.
+async fn respond_frame<T, Fut>(
+    socket: &mut WebSocket,
+    cache: &Mutex<CacheEntry<Message>>,
+    ttl: StdDuration,
+    collect: impl FnOnce() -> Fut,
+    encode: impl FnOnce(T) -> Message,
+) where
+    Fut: std::future::Future<Output = T>,
+{
+    {
+        let cache = cache.lock().await;
+        if cache.is_fresh(ttl)
+            && let Some(frame) = cache.get()
+        {
+            let _ = socket.send(frame.clone()).await;
+            return;
+        }
+    }
+    let frame = encode(collect().await);
+    cache.lock().await.set(frame.clone());
+    let _ = socket.send(frame).await;
+}
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -117,68 +185,34 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     while let Some(Ok(msg)) = socket.next().await {
         match msg {
             Message::Text(ref text) if text == "get_metrics" => {
-                let m = collect_fast_metrics(&state).await;
-                let _ = send_json(&mut socket, &m).await;
+                respond_frame(
+                    &mut socket,
+                    &state.cache_metrics,
+                    StdDuration::from_millis(metrics_ttl_ms()),
+                    || collect_fast_metrics(&state),
+                    |m| json_frame(&m),
+                )
+                .await;
             }
             Message::Text(ref text) if text == "get_disks" => {
-                let d = collect_disks(&state).await;
-                let _ = send_json(&mut socket, &d).await;
+                respond_frame(
+                    &mut socket,
+                    &state.cache_disks,
+                    StdDuration::from_millis(disks_ttl_ms()),
+                    || collect_disks(&state),
+                    |d| json_frame(&d),
+                )
+                .await;
             }
             Message::Text(ref text) if text == "get_processes" => {
-                let payload = collect_processes_all(&state).await;
-
-                // Get cached buffers. The Vec capacity is preserved across
-                // calls (with_capacity(512) seeds it, then we swap-back after
-                // encode so the allocation outlives any single request).
-                let cache = COMPRESSION_CACHE.get_or_init(|| Mutex::new(CompressionCache::new()));
-                let mut cache = cache.lock().await;
-
-                cache.processes_vec.clear();
-                cache
-                    .processes_vec
-                    .extend(payload.top_processes.into_iter().map(|p| pb::Process {
-                        pid: p.pid,
-                        name: p.name,
-                        cpu_usage: p.cpu_usage,
-                        mem_bytes: p.mem_bytes,
-                    }));
-
-                // Move the populated Vec into the proto, encode, then move it
-                // BACK into the cache so the next call reuses the same heap
-                // allocation. The previous code did `mem::take(...)` here but
-                // then dropped `pb` (and the Vec along with it), leaving the
-                // cache holding an empty zero-capacity Vec — defeating the
-                // whole point of `with_capacity(512)`.
-                let mut pb = pb::Processes {
-                    process_count: payload.process_count as u64,
-                    rows: std::mem::take(&mut cache.processes_vec),
-                };
-
-                let mut buf = Vec::with_capacity(8 * 1024);
-                let encode_result = prost::Message::encode(&pb, &mut buf);
-                // Restore the (now-encoded-from) Vec to the cache before pb is
-                // dropped. We `take` it out of pb to leave that field empty,
-                // and the next request will `.clear()` before refilling.
-                cache.processes_vec = std::mem::take(&mut pb.rows);
-
-                if encode_result.is_err() {
-                    let _ = socket.send(Message::Close(None)).await;
-                } else if buf.len() <= COMPRESSION_THRESHOLD {
-                    let _ = socket.send(Message::Binary(buf)).await;
-                } else {
-                    // Create a new encoder for each message to ensure proper gzip headers
-                    let mut encoder =
-                        GzEncoder::new(Vec::with_capacity(buf.len()), Compression::fast());
-                    match encoder.write_all(&buf).and_then(|_| encoder.finish()) {
-                        Ok(compressed) => {
-                            let _ = socket.send(Message::Binary(compressed)).await;
-                        }
-                        Err(_) => {
-                            let _ = socket.send(Message::Binary(buf)).await;
-                        }
-                    }
-                }
-                drop(cache); // Explicit drop to release mutex early
+                respond_frame(
+                    &mut socket,
+                    &state.cache_processes,
+                    StdDuration::from_millis(processes_ttl_ms()),
+                    || collect_processes_all(&state),
+                    processes_frame,
+                )
+                .await;
             }
             Message::Text(ref text) if text.starts_with("get_process_metrics:") => {
                 if let Some(pid_str) = text.strip_prefix("get_process_metrics:")
@@ -221,20 +255,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
 // Small, cheap gzip for larger payloads; send text for small.
 async fn send_json<T: serde::Serialize>(ws: &mut WebSocket, value: &T) -> Result<(), axum::Error> {
-    let json = serde_json::to_string(value).expect("serialize");
-    if json.len() <= COMPRESSION_THRESHOLD {
-        return ws.send(Message::Text(json)).await;
-    }
-    let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
-    enc.write_all(json.as_bytes()).ok();
-    let bin = enc.finish().unwrap_or_else(|_| json.into_bytes());
-    ws.send(Message::Binary(bin)).await
+    ws.send(json_frame(value)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use prost::Message as ProstMessage;
+    use std::io::Read;
     use sysinfo::System;
 
     #[tokio::test]
@@ -253,51 +281,23 @@ mod tests {
         // Get processes directly using the collection function
         let processes = collect_processes_all(&state).await;
 
-        // Convert to protobuf message format
-        let cache = COMPRESSION_CACHE.get_or_init(|| Mutex::new(CompressionCache::new()));
-        let mut cache = cache.lock().await;
-
-        // Reuse process vector to build the list
-        cache.processes_vec.clear();
-        cache
-            .processes_vec
-            .extend(processes.top_processes.into_iter().map(|p| pb::Process {
-                pid: p.pid,
-                name: p.name,
-                cpu_usage: p.cpu_usage,
-                mem_bytes: p.mem_bytes,
-            }));
-
-        // Create the protobuf message
-        let pb = pb::Processes {
-            process_count: processes.process_count as u64,
-            rows: cache.processes_vec.clone(),
+        // The request path now builds one encoded frame per TTL, so the test goes
+        // through `processes_frame` and has to decode whatever it produces: a
+        // gzipped Binary frame for a real process list, plain Binary if the list
+        // happens to be under the compression threshold.
+        let raw = match processes_frame(processes) {
+            Message::Binary(b) if b.starts_with(&[0x1f, 0x8b]) => {
+                let mut out = Vec::new();
+                flate2::read::GzDecoder::new(b.as_slice())
+                    .read_to_end(&mut out)
+                    .expect("gunzip the process frame");
+                out
+            }
+            Message::Binary(b) => b,
+            other => panic!("expected a binary process frame, got {other:?}"),
         };
 
-        // Test protobuf encoding/decoding
-        let mut buf = Vec::new();
-        prost::Message::encode(&pb, &mut buf).expect("Failed to encode protobuf");
-        let decoded = pb::Processes::decode(buf.as_slice()).expect("Failed to decode protobuf");
-
-        // Print debug info
-        println!("Process count: {}", pb.process_count);
-        println!("Process vector length: {}", pb.rows.len());
-        println!("Encoded size: {} bytes", buf.len());
-        println!("Decoded process count: {}", decoded.rows.len());
-
-        // Print first few processes if available
-        for (i, process) in pb.rows.iter().take(5).enumerate() {
-            println!(
-                "Process {}: {} (PID: {}) CPU: {:.1}% MEM: {} bytes",
-                i + 1,
-                process.name,
-                process.pid,
-                process.cpu_usage,
-                process.mem_bytes
-            );
-        }
-
-        // Validate
+        let pb = pb::Processes::decode(raw.as_slice()).expect("Failed to decode protobuf");
         assert!(!pb.rows.is_empty(), "Process list should not be empty");
         assert!(
             pb.process_count > 0,
