@@ -53,6 +53,11 @@ cargo test --workspace
   advisories that had no alert at all. Run it before claiming "no advisories left".
 - Dependabot alerts close when the fixed lockfile reaches the **default branch**; citing the GHSA id in
   a commit message makes the link explicit.
+- **`docs/PERFORMANCE_REVIEW.md` and `docs/SECURITY_REVIEW.md` are deliberately not in the repo** while
+  their findings are open (the repo is public; S1 and S3 describe reachable unpatched behaviour).
+  Commit messages and PR bodies cite findings by id — P1..P12 for performance, S1..S10 for security. If a
+  comment in a tracked file wants to cite one, describe the constraint inline instead of pointing at a
+  path that is not in the tree.
 - Zellij plugin specifics (0.45 SDK): needs a Zellij 0.45.x runtime; `register_plugin!` already emits
   the `thread_local STATE` (hand-rolling a second one is a compile error *and* was unsound as a
   `static mut`); `Event::Key` carries `KeyWithModifier { bare_key, key_modifiers }`, not the old `Key`
@@ -60,6 +65,46 @@ cargo test --workspace
   connector call is driven by `futures::executor::block_on` — a known limitation of the scaffold.
 - Native `cargo check` inside `zellij_socktop_plugin/` fails here while building `openssl-sys`
   (`Can't locate FindBin.pm`). Only the wasm target is meaningful for that crate.
+
+## Performance (all numbers from a Pi 5: Debian 13, aarch64, 4 cores, ~200 processes)
+
+- Reproduce with `scripts/run_perf.sh <agent-binary> <label>` — it drives `scripts/perf_probe.py`, a
+  stdlib-only WS client (no pip, no venv) with four modes: `cadence` (one client at the TUI's default
+  polling, 40 s), `detail` (per-PID endpoints, cold and within TTL), `flood` (10 clients on
+  `get_processes`, 10 s), `tls` (n handshakes + upgrades; set `SOCKTOP_PERF_CA=<cert>` to verify the way
+  `--tls-ca` does). It reads the agent's own `/proc` entries; `/proc/<pid>/io` (the syscall column) needs
+  the same user or root and prints n/a otherwise.
+- **A TTL cache hit must be a refcount bump.** The agent's caches hold
+  `CacheEntry<axum::extract::ws::Message>` — the encoded wire frame, gzip included — not the decoded
+  payload. `respond_frame` in `ws.rs` is the one shape: TTL hit = clone a `Message`, miss = collect +
+  encode once + store. Caching the decoded payload meant every hit re-cloned N `String`s, re-encoded
+  protobuf and re-gzipped: 121.7 us -> 14.5 us per `get_processes` reply.
+- **sysinfo:** `without_tasks()` stays in the refresh (task maps cost a syscall each). Per-PID CPU is a
+  diff of `accumulated_cpu_time()` against `ProcCpuTracker.last_per_pid`; a changed value that is *lower*
+  than last time means the PID was reused. Child enumeration walks `system.processes()` once via
+  `proc.parent()` — do not reintroduce a second `/proc` scan. `get_processes` costs 692 read syscalls,
+  was 1574.
+- **The agent's runtime is `current_thread` by default.** Every request path funnels through locks one
+  poll already holds; the slow collectors (journalctl, NVML) use `spawn_blocking`, which works on a
+  current_thread runtime. `SOCKTOP_WORKER_THREADS=N` opts back into a multi-thread runtime, so
+  `rt-multi-thread` must stay in the agent's tokio feature list even though the default never uses it.
+- **Crypto: `ring` only, everywhere.** `cargo tree -i aws-lc-rs` must match nothing in all three
+  lockfiles; the agent's `axum-server` is `tls-rustls-no-provider` and installs
+  `crypto::ring::default_provider()` explicitly. The cost is that `wss://` negotiates no post-quantum
+  X25519MLKEM768 share (the client was already ring, so it never negotiated one anyway). To get PQ back,
+  enable aws-lc-rs in the connector *and* the agent — one side alone changes nothing. Measured on the Pi:
+  ring handshakes are about 2x cheaper than aws-lc (2.8 ms vs 5.6 ms, 356/s vs 180/s).
+- **Workspace `tokio` carries no features** (`Cargo.toml`); each member lists its own. A workspace build
+  unifies features and hides a missing one — verify with `cargo build -p <member>`.
+- **The arm64 `.deb` is built `--no-default-features`.** `gfxinfo` links libdrm/libdrm_amdgpu at build
+  time, so a GPU-enabled arm64 package Depends on two libraries no Pi uses and runs the GPU probe on the
+  first process-detail request. aarch64 with a real GPU (Jetson) is a local build with the feature.
+- Building on a Pi over ssh: `export PATH=$HOME/.cargo/bin:$PATH` — a non-login shell has no cargo.
+- **Measured and left alone** (don't re-litigate without new data): dropping sysinfo from the TUI
+  (−111 KB binary, cold `cargo build -p socktop` 30.9 s vs 31.2 s — no build-time win, and the kill path
+  would need hand-written unsafe Linux/other-unix/Windows code in CI); removing axum/hyper/tower from the
+  agent (plausibly the biggest remaining win, entirely unmeasured — spike it before committing); the TUI's
+  double draw per tick and 33 ms input poll (0.17% of a core); the 1 s hwmon rescan (100–150 reads/s).
 
 ## PR conventions
 

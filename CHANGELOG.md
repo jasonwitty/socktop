@@ -37,6 +37,74 @@
   fields of the connector's error enum into `redundant_field_names` errors, so
   the existing `clippy -- -D warnings` gate was red on master.
 
+### Performance
+
+Numbers are from a Raspberry Pi 5 (Debian 13, aarch64, 4 cores, ~200 running
+processes) with `scripts/run_perf.sh`, which is now in the repo. "Before" is
+1.60.2 (`31dfc93`), "after" is this tree, both agent binaries built
+`--no-default-features` as the arm64 package is.
+
+| one agent, one client, 40 s at the TUI's default polling | before | after |
+|---|---|---|
+| agent CPU | 190 ms (0.47% of a core) | 150 ms (0.37%) |
+| resident memory | 5344 kB | 4832 kB |
+| `get_processes` read syscalls per request | 1574 | 692 |
+| threads | 3 | 1 |
+| process-detail request, cold | 4.3 ms, 1349 syscalls | 0.9 ms, 140 syscalls |
+| journal request, cold | 19.9 ms wall | 10.4 ms wall |
+
+| ten clients hammering `get_processes` for 10 s | before | after |
+|---|---|---|
+| replies served | 102,267 | 391,851 |
+| agent CPU | 12,450 ms (124% of a core) | 5,690 ms (57%) |
+| CPU per reply | 121.7 us | 14.5 us |
+
+| | before | after |
+|---|---|---|
+| time to start listening | 25 ms | 8 ms |
+| `wss://` handshake | 5.6 ms (180/s) | 2.8 ms (356/s) |
+| agent binary, aarch64 | 5,124,280 B | 3,682,480 B (-28%) |
+| agent binary, x86_64 | 6,790,800 B | 4,208,408 B (-38%) |
+
+- **`/proc` is read once per process per poll, not twice** (`socktop_agent`): the
+  refresh asks sysinfo for tasks no longer (`without_tasks()`), CPU percent comes
+  from diffing `accumulated_cpu_time()` against the previous poll, and the
+  process-detail endpoint finds children by walking the table it already has
+  instead of scanning `/proc` a second time.
+- **A cached reply is the frame that goes on the wire.** The `get_metrics`,
+  `get_disks` and `get_processes` caches hold the encoded (and, where applicable,
+  gzipped) WebSocket message, so a TTL hit is a refcount bump instead of a
+  payload clone + protobuf encode + gzip per request. That is where the flood
+  number above comes from, and it removes the `COMPRESSION_CACHE` static and the
+  `mem::take` round-trip that went with it.
+- **journalctl emits only the fields the agent parses**
+  (`--output-fields=MESSAGE,PRIORITY,_PID,_COMM,_UID,_GID,_SYSTEMD_UNIT`): 300
+  lines of PID 1's journal goes from 338 KB to 151 KB, and there is that much
+  less JSON for serde to walk.
+- **One crypto provider: `ring`.** `aws-lc-rs` is gone from all three lockfiles —
+  it arrived through rustls' default features and was pulled in a second time by
+  `axum-server`. That is most of the binary-size delta above, and the handshake
+  got ~2x cheaper on aarch64 as well. The trade-off is spelled out in the commit:
+  `wss://` negotiates no post-quantum X25519MLKEM768 share. It never did in
+  practice, because the client was already ring; to get it back, enable
+  aws-lc-rs in the connector *and* the agent.
+- **Both binaries now default to a single-threaded runtime.** Every request path
+  in the agent funnels through locks one poll already holds, and the slow
+  collectors (journalctl, NVML) run on `spawn_blocking`. `SOCKTOP_WORKER_THREADS=N`
+  opts back into a multi-thread runtime for hosts that want it.
+- **Less dead weight in the process**: the statics that only ever cloned
+  (hostname, the per-core CPU vec, the network-name cache), `once_cell`,
+  `hostname` and `anyhow` in the agent, and tokio's `full` feature set — each
+  member now asks for the tokio features it uses.
+- **Packaging**: the arm64 `.deb` is built `--no-default-features`, so it no
+  longer Depends on libdrm/libdrm_amdgpu for a GPU no Raspberry Pi has, and
+  `scripts/install.sh` picks the same shape by `uname -m`. Building a GPU-enabled
+  agent for aarch64 (Jetson) stays possible; docs/cross-compiling.md says how.
+- **The systemd unit gains limits** — `Nice=10`, `IOSchedulingClass=idle`,
+  `CPUQuota=25%`, `MemoryHigh=32M`, `MemoryMax=48M`. The quota is ~60x the
+  measured steady-state CPU, so it is invisible in normal use; it exists to bound
+  a stuck poll or a flooding client, and `MemoryMax` turns a leak into a restart
+  rather than a swapped machine. Both unit files carry the same block now.
 ### Zellij plugin
 
 - `zellij-tile` 0.40 → 0.45. The old SDK dragged in `surf → http-types → rand`
@@ -60,6 +128,10 @@
   invocation under a deployment without touching command lines. `App`'s
   builder renamed `with_local` → `with_kill_enabled` to match what it now
   means (locality fact AND policy).
+- **Lighter client.** The TUI runs on a single-threaded runtime and no longer
+  pulls tokio's `full` feature set. Watching a local agent on a Pi 5 for 30 s
+  costs 70 ms of CPU instead of 80 ms and one thread instead of five; the x86_64
+  binary is 3,502,768 B (was 3,559,080).
 
 ## 1.60.1 — unreleased
 
