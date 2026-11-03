@@ -83,7 +83,11 @@ jobs:
           echo "=== Contents of /etc/apt/sources.list.d/ ==="
           ls -la /etc/apt/sources.list.d/ || true
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libdrm-dev:arm64 libdrm-amdgpu1:arm64
+          # No libdrm:arm64 here on purpose — the arm64 agent .deb is built with
+          # --no-default-features (no `gpu` feature, no gfxinfo, no libdrm), because
+          # the only 64-bit Pi hardware in the fleet has no usable GPU. See P6 of
+          # docs/PERFORMANCE_REVIEW.md.
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Install cross-compilation tools (ARMhf)
         if: matrix.target == 'armv7-unknown-linux-gnueabihf'
@@ -153,13 +157,17 @@ jobs:
           cargo deb --package socktop --target ${{ matrix.target }} --no-strip
 
       - name: Build socktop_agent .deb package (with GPU support)
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip
 
       - name: Build socktop_agent .deb package (without GPU support)
-        if: matrix.target == 'armv7-unknown-linux-gnueabihf' || matrix.target == 'riscv64gc-unknown-linux-gnu'
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
         run: |
+          # arm64 included: gfxinfo links libdrm/libdrm_amdgpu at build time, so the
+          # package would Depend on two libraries a Pi never uses and run the gfxinfo
+          # probe on the first process-detail request. Jetson and other aarch64 hosts
+          # with a real GPU can build with the feature locally.
           cargo deb --package socktop_agent --target ${{ matrix.target }} --no-strip --no-default-features
 
       - name: Copy packages to debs directory
