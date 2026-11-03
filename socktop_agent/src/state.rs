@@ -12,15 +12,16 @@ pub type SharedComponents = Arc<Mutex<Components>>;
 pub type SharedDisks = Arc<Mutex<Disks>>;
 pub type SharedNetworks = Arc<Mutex<Networks>>;
 
+/// Per-PID CPU totals (milliseconds, as sysinfo reports them) as of the previous
+/// `get_processes` poll, plus the machine's total CPU at that moment. Both live
+/// as long as the agent does: the poll differences what it reads against this map
+/// and writes the new totals straight back, so its capacity is allocated once,
+/// and PIDs that have gone away are pruned at the end of every poll.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct ProcCpuTracker {
     pub last_total: u64,
-    pub last_per_pid: HashMap<u32, u64>,
-    /// PID → process name cache. Mirrors the non-Linux `ProcessCache.names`.
-    /// On a Pi with ~150-300 mostly-stable processes this avoids re-allocating
-    /// the same `String`s on every processes poll (~once per 1.5s).
-    pub names: HashMap<u32, String>,
+    pub last_per_pid: HashMap<sysinfo::Pid, u64>,
 }
 
 #[cfg(not(target_os = "linux"))]

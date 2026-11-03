@@ -8,7 +8,6 @@ use crate::types::{
 };
 use once_cell::sync::OnceCell;
 #[cfg(target_os = "linux")]
-use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
@@ -37,6 +36,18 @@ mod procstat {
     }
     pub fn field(stat: &str, n: usize) -> Option<&str> {
         after_comm(stat)?.split_whitespace().nth(n)
+    }
+    /// The `comm` name between the first '(' and the last ')' — the same string
+    /// `/proc/{pid}/comm` contains, so a caller that already read stat does not
+    /// need a second read for the name.
+    pub fn comm(stat: &str) -> Option<&str> {
+        let open = stat.find('(')?;
+        let close = stat.rfind(')')?;
+        if close < open {
+            None
+        } else {
+            Some(&stat[open + 1..close])
+        }
     }
     /// (utime, stime) in clock ticks.
     pub fn utime_stime(stat: &str) -> Option<(u64, u64)> {
@@ -554,15 +565,8 @@ fn read_total_jiffies() -> io::Result<u64> {
     Err(io::Error::other("no cpu line"))
 }
 
-#[cfg(target_os = "linux")]
-#[inline]
-fn read_proc_jiffies(pid: u32) -> Option<u64> {
-    let s = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (utime, stime) = procstat::utime_stime(&s)?;
-    Some(utime.saturating_add(stime))
-}
-
-/// Collect all processes (Linux): compute CPU% via /proc jiffies delta; sorting moved to client.
+/// Collect all processes (Linux): CPU% is the delta of the per-process CPU totals
+/// sysinfo already parsed. Sorting moved to the client.
 #[cfg(target_os = "linux")]
 pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     let ttl = StdDuration::from_millis(processes_ttl_ms());
@@ -574,18 +578,22 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
             return c.clone();
         }
     }
-    // Reuse shared System to avoid reallocation. We only need name + memory
-    // from sysinfo here — per-process CPU% is computed below from /proc/{pid}/stat
-    // jiffies (see `read_proc_jiffies` + `read_total_jiffies`), so asking sysinfo
-    // to gather CPU/exe/cmd/cwd/env per process is wasted /proc traffic on a Pi
-    // (was reading /proc/{pid}/{cmdline,exe,cwd,environ,io,status} for every PID
-    // on every 2 s poll via `everything()`).
+    // Reuse shared System to avoid reallocation. What this refresh has to yield:
+    // name, RSS, parent (the detail endpoint reads the same table) and the
+    // process's lifetime CPU total.
+    //
+    // `with_cpu()` adds no /proc traffic on Linux: utime/stime come from the stat
+    // file sysinfo parses for every process anyway, and `accumulated_cpu_time` is
+    // arithmetic on them. It replaces a second, hand-rolled pass that read
+    // /proc/<pid>/stat again for every process on the host — four syscalls and a
+    // String allocation per process, per poll. Asking for exe/cmd/cwd/environ, as
+    // `everything()` used to, is what made this poll genuinely expensive: those are
+    // extra files per process.
     //
     // `without_tasks()` is REQUIRED: it suppresses per-thread entries in the
     // process map (without it, sysinfo returns one entry per /proc/[tid] —
     // 780+ entries on a typical desktop because of glib/gdbus/Chrome thread
-    // pools). The original code paired this with `everything()`; we keep the
-    // filter when downgrading to a minimal refresh spec.
+    // pools).
     let mut sys_guard = state.sys.lock().await;
     let sys = &mut *sys_guard;
     // `true` = remove processes that no longer exist. With `false`, this
@@ -599,98 +607,53 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_memory().without_tasks(),
+        ProcessRefreshKind::nothing()
+            .with_memory()
+            .with_cpu()
+            .without_tasks(),
     );
 
     let total_count = sys.processes().len();
-
-    // Snapshot current per-pid jiffies
-    let mut current: HashMap<u32, u64> = HashMap::with_capacity(total_count);
-    for p in sys.processes().values() {
-        let pid = p.pid().as_u32();
-        if let Some(j) = read_proc_jiffies(pid) {
-            current.insert(pid, j);
-        }
-    }
     let total_now = read_total_jiffies().unwrap_or(0);
 
-    // Compute deltas vs last sample. We hold the proc_cpu lock for the whole
-    // collection below so we can read+update the per-pid name cache in one
-    // critical section.
     let mut tracker = state.proc_cpu.lock().await;
     let last_total = tracker.last_total;
-    // Move the old per-pid jiffies map out for delta computation.
-    let mut last_map = std::mem::take(&mut tracker.last_per_pid);
     tracker.last_total = total_now;
+    // First poll after start, or a counter reset across a reboot: there is no
+    // previous total to difference against, so this round reports zeros rather
+    // than each process's lifetime CPU share.
+    let cold = last_total == 0 || total_now <= last_total;
+    // /proc/stat totals are ticks at the externally-pegged 100 Hz; sysinfo's
+    // per-process totals are milliseconds. Difference in milliseconds.
+    let dt_ms = (total_now.saturating_sub(last_total).max(1) * 10) as f32;
 
-    // Resolve a name through the per-pid cache. Allocates only on miss.
-    let resolve_name =
-        |tracker: &mut crate::state::ProcCpuTracker, pid: u32, p: &sysinfo::Process| -> String {
-            if let Some(cached) = tracker.names.get(&pid) {
-                return cached.clone();
-            }
-            let new_name = p.name().to_string_lossy().into_owned();
-            tracker.names.insert(pid, new_name.clone());
-            new_name
-        };
-
-    // On first run or if total delta is tiny, report zeros.
-    if last_total == 0 || total_now <= last_total {
-        let mut procs: Vec<ProcessInfo> = Vec::with_capacity(total_count);
-        for p in sys.processes().values() {
-            let pid = p.pid().as_u32();
-            let name = resolve_name(&mut tracker, pid, p);
-            procs.push(ProcessInfo {
-                pid,
-                name,
-                cpu_usage: 0.0,
-                mem_bytes: p.memory(),
-            });
-        }
-        // Stash the just-collected jiffies for next call's delta, then prune
-        // dead pids from the name cache. Borrowing dance: retain reads
-        // `tracker.last_per_pid` through the closure, which conflicts with
-        // the mutable borrow of `tracker.names.retain`. Split via split-borrow:
-        tracker.last_per_pid = current;
-        let crate::state::ProcCpuTracker {
-            ref last_per_pid,
-            ref mut names,
-            ..
-        } = *tracker;
-        names.retain(|pid, _| last_per_pid.contains_key(pid));
-        return ProcessesPayload {
-            process_count: total_count,
-            top_processes: procs,
-        };
-    }
-
-    let dt = total_now.saturating_sub(last_total).max(1) as f32;
-
+    // One map, updated in place: it holds each PID's CPU total as of the previous
+    // poll, gets this poll's total written back, and is pruned of PIDs that went
+    // away. It used to be a fresh HashMap per poll plus a second cache of process
+    // names, which existed only to avoid a clone that the payload needs anyway.
     let mut procs: Vec<ProcessInfo> = Vec::with_capacity(total_count);
     for p in sys.processes().values() {
-        let pid = p.pid().as_u32();
-        let now = current.get(&pid).copied().unwrap_or(0);
-        let prev = last_map.remove(&pid).unwrap_or(0);
-        let du = now.saturating_sub(prev) as f32;
-        let cpu = ((du / dt) * 100.0).clamp(0.0, 100.0);
-        let name = resolve_name(&mut tracker, pid, p);
+        let pid = p.pid();
+        let now_ms = p.accumulated_cpu_time();
+        let prev_ms = tracker.last_per_pid.get(&pid).copied().unwrap_or(0);
+        let cpu_usage = if cold {
+            0.0
+        } else {
+            ((now_ms.saturating_sub(prev_ms) as f32) / dt_ms * 100.0).clamp(0.0, 100.0)
+        };
+        tracker.last_per_pid.insert(pid, now_ms);
         procs.push(ProcessInfo {
-            pid,
-            name,
-            cpu_usage: cpu,
+            pid: pid.as_u32(),
+            name: p.name().to_string_lossy().into_owned(),
+            cpu_usage,
             mem_bytes: p.memory(),
         });
     }
-    // Save current jiffies map for next call and prune dead pids from the
-    // name cache. `current` is moved here (no clone — that's also #19).
-    tracker.last_per_pid = current;
-    let crate::state::ProcCpuTracker {
-        ref last_per_pid,
-        ref mut names,
-        ..
-    } = *tracker;
-    names.retain(|pid, _| last_per_pid.contains_key(pid));
+    tracker
+        .last_per_pid
+        .retain(|pid, _| sys.processes().contains_key(pid));
     drop(tracker);
+    drop(sys_guard);
 
     let payload = ProcessesPayload {
         process_count: total_count,
@@ -823,8 +786,9 @@ pub async fn collect_processes_all(state: &AppState) -> ProcessesPayload {
     payload
 }
 
-/// Lightweight child process enumeration using direct /proc access
-/// This avoids the expensive refresh_processes_specifics(All) call
+/// Children of a PID, from the process table the last `get_processes` poll
+/// already filled; one `/proc/{pid}/stat` read per match, for the two fields the
+/// table does not carry.
 #[cfg(target_os = "linux")]
 fn enumerate_child_processes_lightweight(
     parent_pid: u32,
@@ -832,61 +796,72 @@ fn enumerate_child_processes_lightweight(
 ) -> Vec<DetailedProcessInfo> {
     let mut children = Vec::new();
 
-    // Read /proc to find all child processes
-    // This is much faster than refresh_processes_specifics(All)
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(pid) = file_name.parse::<u32>()
-                && let Some(child_parent_pid) = read_parent_pid_from_proc(pid)
-                && child_parent_pid == parent_pid
-                && let Some(child_info) = collect_process_info_from_proc(pid, system)
-            {
-                children.push(child_info);
-            }
+    // sysinfo fills `parent()` from the stat file on every refresh whatever the
+    // refresh kind, so walking its table costs no /proc traffic: the table is at
+    // most one poll interval old while a client is attached. Finding children by
+    // scanning /proc and reading every process's stat to compare its ppid cost
+    // ~5,000 read syscalls and 10 ms of CPU per request, and it was open-ended —
+    // an unauthenticated client walking PIDs was charged that for every request.
+    // `/proc/<pid>/task/<pid>/children` would be cheaper still but needs
+    // CONFIG_PROC_CHILDREN, which this kernel does not have, so it cannot be
+    // relied on.
+    for (pid, proc) in system.processes() {
+        if proc.parent().map(|pp| pp.as_u32()) != Some(parent_pid) {
+            continue;
         }
+        let pid_u32 = pid.as_u32();
+        // One read, for the name and the CPU times. Everything else in the row
+        // the table already has.
+        let (name, cpu_time_user, cpu_time_system) = match read_proc_brief(pid_u32) {
+            Some(brief) => (brief.name, brief.cpu_time_user_us, brief.cpu_time_system_us),
+            None => (proc.name().to_string_lossy().into_owned(), 0, 0),
+        };
+        children.push(DetailedProcessInfo {
+            pid: pid_u32,
+            name,
+            command: String::new(),
+            cpu_usage: proc.cpu_usage(),
+            mem_bytes: proc.memory(),
+            virtual_mem_bytes: proc.virtual_memory(),
+            shared_mem_bytes: None,
+            thread_count: 0,
+            fd_count: None,
+            status: String::new(),
+            parent_pid: Some(parent_pid),
+            // Not shown for a child row, and each would cost another file read.
+            user_id: 0,
+            group_id: 0,
+            start_time: proc.start_time(),
+            cpu_time_user,
+            cpu_time_system,
+            read_bytes: None,
+            write_bytes: None,
+            working_directory: None,
+            executable_path: None,
+            child_processes: Vec::new(), // Don't recurse
+            threads: Vec::new(),         // Not collected for child processes
+        });
     }
 
     children
 }
 
-/// Single-read extraction of the /proc/{pid}/status fields the detail
-/// endpoint cares about. Callers used to open this file twice per
-/// detail-process record (once for VmRSS/VmSize, once for Uid/Gid/Threads/
-/// State); now it's one read + one scan.
+/// The /proc/{pid}/status fields the detail endpoint cannot get from sysinfo.
+/// The rest of what this parser used to pull (VmRSS/VmSize/Threads/State) only
+/// ever fed child-process records, which no view renders.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 struct ProcStatus {
-    rss_kb: u64,
-    vsize_kb: u64,
     uid: u32,
     gid: u32,
-    threads: u32,
-    /// Raw status letter from `State:` (e.g. 'R', 'S'). '?' if missing.
-    state_ch: char,
 }
 
 #[cfg(target_os = "linux")]
 fn read_proc_status(pid: u32) -> Option<ProcStatus> {
     let content = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let mut out = ProcStatus {
-        state_ch: '?',
-        ..Default::default()
-    };
+    let mut out = ProcStatus::default();
     for line in content.lines() {
-        if let Some(v) = line.strip_prefix("VmRSS:") {
-            out.rss_kb = v
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-        } else if let Some(v) = line.strip_prefix("VmSize:") {
-            out.vsize_kb = v
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-        } else if let Some(v) = line.strip_prefix("Uid:") {
+        if let Some(v) = line.strip_prefix("Uid:") {
             out.uid = v
                 .split_whitespace()
                 .next()
@@ -898,143 +873,33 @@ fn read_proc_status(pid: u32) -> Option<ProcStatus> {
                 .next()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
-        } else if let Some(v) = line.strip_prefix("Threads:") {
-            out.threads = v.trim().parse().unwrap_or(0);
-        } else if let Some(v) = line.strip_prefix("State:") {
-            out.state_ch = v.trim().chars().next().unwrap_or('?');
         }
     }
     Some(out)
 }
 
+/// The two things one `/proc/{pid}/stat` read answers for a child row: the name
+/// (the comm field — the same string `/proc/{pid}/comm` holds, kernel-truncated
+/// to 15 chars) and the utime/stime pair. The scan used to read stat for every
+/// process on the box to find the parent, then for each child open stat *again*
+/// plus status, comm, cmdline, io and two readlinks: eight /proc accesses per
+/// child, for fields no view renders on a child row.
 #[cfg(target_os = "linux")]
-fn proc_state_label(c: char) -> &'static str {
-    match c {
-        'R' => "Running",
-        'S' => "Sleeping",
-        'D' => "Disk Sleep",
-        'Z' => "Zombie",
-        'T' => "Stopped",
-        't' => "Tracing Stop",
-        'X' | 'x' => "Dead",
-        'K' => "Wakekill",
-        'W' => "Waking",
-        'P' => "Parked",
-        'I' => "Idle",
-        _ => "Unknown",
-    }
+struct ProcBrief {
+    name: String,
+    cpu_time_user_us: u64,
+    cpu_time_system_us: u64,
 }
 
-/// Read parent PID from /proc/{pid}/stat
 #[cfg(target_os = "linux")]
-fn read_parent_pid_from_proc(pid: u32) -> Option<u32> {
+fn read_proc_brief(pid: u32) -> Option<ProcBrief> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Post-comm field 1 is ppid.
-    procstat::field(&stat, 1)?.parse::<u32>().ok()
-}
-
-/// Collect process information from /proc files
-#[cfg(target_os = "linux")]
-fn collect_process_info_from_proc(
-    pid: u32,
-    system: &sysinfo::System,
-) -> Option<DetailedProcessInfo> {
-    // One read of /proc/{pid}/status gets us everything the detail endpoint
-    // needs from it: memory (when not in sysinfo cache), Uid/Gid, Threads,
-    // and State. The previous code opened this file twice per process record.
-    let st = read_proc_status(pid)?;
-
-    let (name, cpu_usage, mem_bytes, virtual_mem_bytes) =
-        if let Some(proc) = system.process(sysinfo::Pid::from_u32(pid)) {
-            (
-                proc.name().to_string_lossy().to_string(),
-                proc.cpu_usage(),
-                proc.memory(),
-                proc.virtual_memory(),
-            )
-        } else {
-            // Process not in sysinfo cache — derive name from /proc/{pid}/comm
-            // and memory from the status read above.
-            let name = fs::read_to_string(format!("/proc/{pid}/comm"))
-                .ok()?
-                .trim()
-                .to_string();
-            (name, 0.0, st.rss_kb * 1024, st.vsize_kb * 1024)
-        };
-
-    // Read command line
-    let command = fs::read_to_string(format!("/proc/{pid}/cmdline"))
-        .ok()
-        .map(|s| s.replace('\0', " ").trim().to_string())
-        .unwrap_or_default();
-
-    let uid = st.uid;
-    let gid = st.gid;
-    let thread_count = st.threads;
-    let status = proc_state_label(st.state_ch).to_string();
-
-    // starttime is post-comm field 19.
-    let start_time = if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        procstat::field(&stat, 19)?.parse::<u64>().ok()?
-    } else {
-        0
-    };
-
-    // Read I/O stats if available
-    let (read_bytes, write_bytes) =
-        if let Ok(io_content) = fs::read_to_string(format!("/proc/{pid}/io")) {
-            let mut read_bytes = None;
-            let mut write_bytes = None;
-
-            for line in io_content.lines() {
-                if let Some(value) = line.strip_prefix("read_bytes:") {
-                    read_bytes = value.trim().parse().ok();
-                } else if let Some(value) = line.strip_prefix("write_bytes:") {
-                    write_bytes = value.trim().parse().ok();
-                }
-            }
-
-            (read_bytes, write_bytes)
-        } else {
-            (None, None)
-        };
-
-    // Read working directory
-    let working_directory = fs::read_link(format!("/proc/{pid}/cwd"))
-        .ok()
-        .map(|p| p.to_string_lossy().to_string());
-
-    // Read executable path
-    let executable_path = fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .map(|p| p.to_string_lossy().to_string());
-
-    // One read of /proc/{pid}/stat covers both user + system CPU times.
-    let (cpu_time_user, cpu_time_system) = get_cpu_times_us(pid);
-
-    Some(DetailedProcessInfo {
-        pid,
+    let name = procstat::comm(&stat)?.to_string();
+    let (utime, stime) = procstat::utime_stime(&stat)?;
+    Some(ProcBrief {
         name,
-        command,
-        cpu_usage,
-        mem_bytes,
-        virtual_mem_bytes,
-        shared_mem_bytes: None, // Would need to parse /proc/{pid}/statm for this
-        thread_count,
-        fd_count: None, // Would need to count entries in /proc/{pid}/fd
-        status,
-        parent_pid: None, // We already know the parent
-        user_id: uid,
-        group_id: gid,
-        start_time,
-        cpu_time_user,
-        cpu_time_system,
-        read_bytes,
-        write_bytes,
-        working_directory,
-        executable_path,
-        child_processes: Vec::new(), // Don't recurse
-        threads: Vec::new(),         // Not collected for child processes
+        cpu_time_user_us: utime * procstat::TICK_US,
+        cpu_time_system_us: stime * procstat::TICK_US,
     })
 }
 
@@ -1111,17 +976,18 @@ fn collect_thread_info(pid: u32) -> Vec<crate::types::ThreadInfo> {
             continue;
         };
 
-        // Read thread name from comm
-        let name = fs::read_to_string(format!("/proc/{pid}/task/{tid}/comm"))
-            .unwrap_or_else(|_| format!("Thread-{tid}"))
-            .trim()
-            .to_string();
-
         // Read thread stat for CPU times and status.
         let stat_path = format!("/proc/{pid}/task/{tid}/stat");
         let Ok(stat_content) = fs::read_to_string(&stat_path) else {
             continue;
         };
+
+        // The stat line's comm field is the thread's own name — the same
+        // string /proc/{pid}/task/{tid}/comm holds — so the threads table costs
+        // one read per thread, not two.
+        let name = procstat::comm(&stat_content)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Thread-{tid}"));
 
         let status = procstat::field(&stat_content, 0)
             .and_then(|s| s.chars().next())
@@ -1471,6 +1337,10 @@ mod tests {
         assert_eq!(procstat::field(stat, 0), Some("R"));
         assert_eq!(procstat::field(stat, 1), Some("1"));
         assert_eq!(procstat::utime_stime(stat), Some((700, 800)));
+        // The name spans the first '(' to the LAST ')' — spaces and embedded
+        // parens included, which is why the extra read of `comm` was never needed.
+        assert_eq!(procstat::comm(stat), Some("weird name) (2)"));
+        assert_eq!(procstat::comm("no parens here"), None);
     }
 
     /// USER_HZ ticks convert to MICROSECONDS — the wire contract. This used
@@ -1480,6 +1350,44 @@ mod tests {
     #[test]
     fn cpu_times_are_microseconds() {
         assert_eq!(procstat::TICK_US, 10_000);
+    }
+
+    /// The child list is built from the process table the process poll fills, so
+    /// the test refreshes one exactly the way the poll does and then checks what
+    /// the detail modal shows for a child: the name (from the stat comm field),
+    /// the CPU times (from the one stat read per child) and memory (from the
+    /// table, which is what proves the table is being used at all).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_enumeration_finds_a_real_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep for the child test");
+        let pid = child.id();
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::nothing()
+                .with_memory()
+                .with_cpu()
+                .without_tasks(),
+        );
+        let children = enumerate_child_processes_lightweight(std::process::id(), &system);
+
+        // Reap on every path so a failing assert cannot leak a 30s sleep.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let found = children
+            .iter()
+            .find(|c| c.pid == pid)
+            .expect("the spawned child was not enumerated");
+        assert_eq!(found.name, "sleep");
+        assert_eq!(found.parent_pid, Some(std::process::id()));
+        assert_eq!(found.cpu_time_user, 0); // a fresh sleep has used no CPU yet
+        assert!(found.mem_bytes > 0, "memory comes from the table");
     }
 
     #[test]
