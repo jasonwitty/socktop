@@ -1,12 +1,8 @@
 //! Swap gauge.
 
 use crate::types::Metrics;
-use crate::ui::util::human;
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    widgets::{Block, Borders, Gauge},
-};
+use crate::ui::util::{draw_labeled_gauge, human};
+use ratatui::{layout::Rect, style::Color};
 
 pub fn draw_swap(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     let (used, total, pct) = if let Some(mm) = m {
@@ -20,10 +16,12 @@ pub fn draw_swap(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         (0, 0, 0)
     };
 
-    let g = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Swap"))
-        .gauge_style(Style::default().fg(Color::Yellow))
-        .percent(pct)
-        .label(format!("{} / {}", human(used), human(total)));
-    f.render_widget(g, area);
+    draw_labeled_gauge(
+        f,
+        area,
+        "Swap",
+        Color::Yellow,
+        pct,
+        format!("{} / {}", human(used), human(total)),
+    );
 }

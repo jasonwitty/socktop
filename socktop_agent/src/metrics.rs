@@ -197,7 +197,7 @@ pub async fn collect_fast_metrics(state: &AppState) -> Metrics {
     };
 
     let mem_total = sys.total_memory();
-    let mem_used = mem_total.saturating_sub(sys.available_memory());
+    let mem_used = used_memory(&sys, mem_total);
     let swap_total = sys.total_swap();
     let swap_used = sys.used_swap();
     drop(sys);
@@ -1519,5 +1519,79 @@ mod tests {
         // Sub-second precision survives.
         let s = format_journal_timestamp(1_786_752_000_123_456);
         assert!(s.starts_with("2026-08-15T00:00:00.123456"), "{s}");
+    }
+}
+
+/// Memory in use, as the platform's own tools count it.
+#[cfg(not(target_os = "macos"))]
+fn used_memory(sys: &sysinfo::System, mem_total: u64) -> u64 {
+    mem_total.saturating_sub(sys.available_memory())
+}
+
+/// Memory in use, as the platform's own tools count it.
+///
+/// `total - available` does not work on macOS: sysinfo derives "available" as
+/// `free + inactive + purgeable - compressor`, which goes to zero (so "used"
+/// pins at 100%) once the compressor holds more than the free and inactive
+/// pages combined — the normal state of a busy Mac. Use Activity Monitor's
+/// definition instead: app memory + wired + compressed.
+#[cfg(target_os = "macos")]
+fn used_memory(sys: &sysinfo::System, mem_total: u64) -> u64 {
+    macos_used_memory()
+        .unwrap_or_else(|| sys.used_memory())
+        .min(mem_total)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_used_memory() -> Option<u64> {
+    // mach_host_self() hands out a new port reference per call; take one for
+    // the process lifetime instead of leaking one per sample.
+    static HOST: OnceCell<libc::mach_port_t> = OnceCell::new();
+    // libSystem's stable entry point, declared here because libc's binding is
+    // deprecated in favour of the mach2 crate, which does not provide it.
+    unsafe extern "C" {
+        safe fn mach_host_self() -> libc::mach_port_t;
+    }
+    let host = *HOST.get_or_init(|| mach_host_self());
+
+    // SAFETY: `stat` and `count` are valid for writes and `count` holds the
+    // size of `stat` in `integer_t`s, as HOST_VM_INFO64 requires.
+    let stat = unsafe {
+        let mut stat = std::mem::zeroed::<libc::vm_statistics64>();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        if libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            &mut stat as *mut libc::vm_statistics64 as *mut _,
+            &mut count,
+        ) != libc::KERN_SUCCESS
+        {
+            return None;
+        }
+        stat
+    };
+    // SAFETY: sysconf has no preconditions.
+    let page_size = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+
+    // App memory is anonymous (non file-backed) pages minus the purgeable ones
+    // the kernel can drop at will. File cache is deliberately not "used".
+    let app = u64::from(stat.internal_page_count).saturating_sub(u64::from(stat.purgeable_count));
+    let pages = app + u64::from(stat.wire_count) + u64::from(stat.compressor_page_count);
+    Some(pages.saturating_mul(page_size))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_memory_tests {
+    /// Used memory is a real fraction of RAM: not zero, and not pinned at the
+    /// total (what `total - available` produced whenever the compressor was
+    /// larger than free + inactive memory).
+    #[test]
+    fn used_memory_is_plausible() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let total = sys.total_memory();
+        let used = super::macos_used_memory().expect("host_statistics64");
+        assert!(used > 0);
+        assert!(used < total, "used {used} >= total {total}");
     }
 }
