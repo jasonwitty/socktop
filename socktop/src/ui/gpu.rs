@@ -24,6 +24,24 @@ fn fmt_bytes(b: u64) -> String {
     }
 }
 
+/// VRAM fill ratio for a gauge, always within `0.0..=1.0`. Agents may report a
+/// total of 0 (unknown) or less than `used`; `Gauge::ratio` panics outside that
+/// range, so neither may reach it.
+fn vram_ratio(used: u64, total: u64) -> f64 {
+    if total > 0 {
+        (used as f64 / total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Whether a GPU has dedicated memory worth a VRAM readout. Agents report a
+/// total of 0 (or nothing) when there is none to measure — notably unified
+/// memory Macs, where "VRAM" is just system RAM and already shown as Memory.
+fn has_vram(g: &socktop_connector::GpuInfo) -> bool {
+    g.mem_total.unwrap_or(0) > 0
+}
+
 pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
     let mut area = area;
     let block = Block::default().borders(Borders::ALL).title("GPU");
@@ -53,19 +71,8 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
         return;
     }
 
-    // Show 3 rows per GPU: name, util bar, vram bar.
-    if area.height < 3 {
-        return;
-    }
-    let per_gpu_rows: u16 = 3;
-    let max_gpus = (area.height / per_gpu_rows) as usize;
-    let count = gpus.len().min(max_gpus);
-
-    let constraints = vec![Constraint::Length(1); count * per_gpu_rows as usize];
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
+    // Per GPU: name, util bar, and a VRAM bar when the GPU has dedicated memory.
+    let rows_for = |g: &socktop_connector::GpuInfo| if has_vram(g) { 3u16 } else { 2 };
 
     // Per bar horizontal layout: [gauge] [value]
     let split_bar = |r: Rect| {
@@ -78,16 +85,28 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             .split(r)
     };
 
-    for i in 0..count {
-        let g = &gpus[i];
+    let mut y = area.y;
+    let bottom = area.y + area.height;
+    let row = |y: u16| Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: 1,
+    };
+
+    for g in gpus {
+        // Only whole GPUs: a name with no bars under it says nothing.
+        if y + rows_for(g) > bottom {
+            break;
+        }
 
         // Row 1: GPU name
         let name_text = g.name.as_deref().unwrap_or("GPU");
         let name_p = Paragraph::new(Span::raw(name_text)).style(Style::default().fg(Color::Gray));
-        f.render_widget(name_p, rows[i * 3]);
+        f.render_widget(name_p, row(y));
 
         // Row 2: Utilization bar + right label
-        let util_cols = split_bar(rows[i * 3 + 1]);
+        let util_cols = split_bar(row(y + 1));
         let util = g.utilization.unwrap_or(0.0).clamp(0.0, 100.0) as u16;
         let util_gauge = Gauge::default()
             .gauge_style(Style::default().fg(Color::Green))
@@ -100,11 +119,16 @@ pub fn draw_gpu(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metrics>) {
             util_cols[1],
         );
 
+        y += rows_for(g);
+        if !has_vram(g) {
+            continue;
+        }
+
         // Row 3: VRAM bar + right label
-        let mem_cols = split_bar(rows[i * 3 + 2]);
+        let mem_cols = split_bar(row(y - 1));
         let used = g.mem_used.unwrap_or(0);
-        let total = g.mem_total.unwrap_or(1);
-        let mem_ratio = used as f64 / total as f64;
+        let total = g.mem_total.unwrap_or(0);
+        let mem_ratio = vram_ratio(used, total);
         let mem_pct = (mem_ratio * 100.0).round() as u16;
 
         let mem_gauge = Gauge::default()
@@ -152,14 +176,40 @@ pub fn draw_gpu_compact(f: &mut ratatui::Frame<'_>, area: Rect, m: Option<&Metri
     };
 
     let util = g.utilization.unwrap_or(0.0).clamp(0.0, 100.0) as u16;
-    let used = g.mem_used.unwrap_or(0);
-    let total = g.mem_total.unwrap_or(1);
-    let mem_ratio = if total > 0 {
-        (used as f64 / total as f64).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
     let util_label = format!("util: {util}%");
+
+    // No dedicated memory: utilisation is the whole story.
+    if !has_vram(g) {
+        const MAX_GAUGE_W: u16 = 24;
+        let label_w = util_label.len() as u16 + 2;
+        let gauge_w = inner.width.saturating_sub(label_w).min(MAX_GAUGE_W);
+        f.render_widget(
+            Paragraph::new(Span::raw(format!(" {util_label} ")))
+                .style(Style::default().fg(Color::Gray)),
+            Rect {
+                width: label_w.min(inner.width),
+                ..inner
+            },
+        );
+        if gauge_w > 0 {
+            f.render_widget(
+                Gauge::default()
+                    .gauge_style(Style::default().fg(Color::Green))
+                    .label(Span::raw(""))
+                    .ratio(util as f64 / 100.0),
+                Rect {
+                    x: inner.x + label_w,
+                    width: gauge_w,
+                    ..inner
+                },
+            );
+        }
+        return;
+    }
+
+    let used = g.mem_used.unwrap_or(0);
+    let total = g.mem_total.unwrap_or(0);
+    let mem_ratio = vram_ratio(used, total);
     let mem_label = format!(
         "vram: {}/{} ({}%)",
         fmt_bytes(used),
@@ -280,6 +330,52 @@ mod render_tests {
             out.push('\n');
         }
         out
+    }
+
+    fn render_full(m: &Metrics) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|f| draw_gpu(f, Rect::new(0, 0, 80, 8), Some(m)))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A GPU with no dedicated memory (total 0 or absent — unified memory
+    /// Macs) gets no VRAM readout in either layout. Also a regression test:
+    /// total 0 used to reach the gauge as an infinite ratio and panic.
+    #[test]
+    fn gpus_without_dedicated_memory_show_no_vram() {
+        for total in [Some(0), None] {
+            let mut g = gpu("Apple M5 Pro");
+            g.mem_total = total;
+            let m = metrics(Some(vec![g]));
+            for out in [render_full(&m), render(80, &m)] {
+                assert!(out.contains("util: 42%"), "{out}");
+                assert!(!out.contains("vram"), "{out}");
+            }
+            assert!(render_full(&m).contains("Apple M5 Pro"));
+        }
+    }
+
+    /// The full pane still shows VRAM for GPUs that have it, and a total
+    /// smaller than `used` must not push the gauge ratio past 1 (panic).
+    #[test]
+    fn full_pane_shows_vram_and_clamps_an_undersized_total() {
+        let out = render_full(&metrics(Some(vec![gpu("NVIDIA GeForce RTX 5080")])));
+        assert!(out.contains("vram: 4.4G/15.9G (28%)"), "{out}");
+
+        let mut g = gpu("odd");
+        g.mem_total = Some(1_000);
+        let out = render_full(&metrics(Some(vec![g])));
+        assert!(out.contains("vram: 4.4G/"), "{out}");
     }
 
     /// Compact mode drops the device name — the row is one line and the numbers are

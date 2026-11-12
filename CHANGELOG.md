@@ -11,6 +11,29 @@
   invocation under a deployment without touching command lines. `App`'s
   builder renamed `with_local` → `with_kill_enabled` to match what it now
   means (locality fact AND policy).
+- **GPU pane hides VRAM for GPUs without dedicated memory** (an agent
+  reporting `mem_total_bytes: 0`, e.g. unified memory Macs) and shows
+  utilization only. Previously the full-size pane fed `used / 0` straight into
+  the gauge and aborted the TUI on the first frame.
+- **Memory and Swap readouts stay legible over the bar.** The part of the
+  `used / total` label covered by the gauge fill is now drawn in black; it was
+  the terminal's default (light) foreground on a bright bar.
+
+### Agent
+
+- **macOS: the agent no longer crashes on the first metrics request.** The
+  `gfxinfo` GPU backend over-releases CoreFoundation objects on macOS, which
+  recent macOS turns into a `SIGTRAP` — so `socktop --demo` (and any macOS
+  agent with GPU collection on) died as soon as a client connected. macOS now
+  reads GPU name and utilization straight from the IORegistry (no VRAM figures
+  on Apple Silicon, where GPU memory is unified system RAM);
+  `gfxinfo` and `nvml-wrapper` are no longer built on macOS. Linux and Windows
+  are unchanged.
+- **macOS: used memory matches Activity Monitor.** It was computed as
+  `total - available`, and on macOS "available" drops to zero once the memory
+  compressor outgrows free + inactive pages, pinning the Memory gauge at 100%
+  on a busy Mac. It is now app memory + wired + compressed. Linux and Windows
+  are unchanged.
 
 ## 1.60.1 — unreleased
 

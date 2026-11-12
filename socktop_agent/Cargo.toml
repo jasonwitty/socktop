@@ -22,11 +22,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 futures-util = "0.3.31"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-gfxinfo = { version = "0.1.2", optional = true }
-# Direct NVML fallback for distros that ship only libnvidia-ml.so.1 (Debian
-# and derivatives) — gfxinfo's default init dlopens the unversioned name.
-# Same version gfxinfo already pulls in, so this adds no new build cost.
-nvml-wrapper = { version = "0.10", optional = true }
 once_cell = "1.19"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -37,9 +32,26 @@ hostname = "0.3"
 prost = { workspace = true }
 time = { version = "0.3", default-features = false, features = ["formatting", "macros", "parsing" ] }
 
+# GPU backends are per-platform; all of them sit behind the `gpu` feature.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+gfxinfo = { version = "0.1.2", optional = true }
+# Direct NVML fallback for distros that ship only libnvidia-ml.so.1 (Debian
+# and derivatives) — gfxinfo's default init dlopens the unversioned name.
+# Same version gfxinfo already pulls in, so this adds no new build cost.
+nvml-wrapper = { version = "0.10", optional = true }
+
+# macOS reads the IORegistry directly (see gpu.rs): gfxinfo 0.1.2 over-releases
+# CoreFoundation objects there, which aborts the agent on recent macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { version = "0.10", optional = true }
+# Mach VM statistics for memory accounting (see metrics.rs). Already in the
+# tree via sysinfo.
+libc = "0.2"
+io-kit-sys = { version = "0.4", optional = true }
+
 [features]
 default = ["gpu"]
-gpu = ["gfxinfo", "nvml-wrapper"]
+gpu = ["dep:gfxinfo", "dep:nvml-wrapper", "dep:core-foundation", "dep:io-kit-sys"]
 logging = ["tracing", "tracing-subscriber"]
 
 [build-dependencies]

@@ -16,9 +16,20 @@ pub struct GpuMetrics {
 /// for every collection. The worker owns one handle for the process lifetime,
 /// so steady-state collection is just NVML queries. Measured on an RTX 5080
 /// box, re-initing per collect was ~80% of the agent's entire active CPU.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub async fn collect_all_gpus() -> Option<Vec<GpuMetrics>> {
     worker::collect().await
+}
+
+/// macOS: read the IORegistry directly (see `macos`). The query is a few
+/// blocking IOKit calls with no handle to keep alive, so the blocking pool is
+/// enough — no dedicated worker.
+#[cfg(all(feature = "gpu", target_os = "macos"))]
+pub async fn collect_all_gpus() -> Option<Vec<GpuMetrics>> {
+    tokio::task::spawn_blocking(macos::collect)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(feature = "gpu"))]
@@ -26,7 +37,7 @@ pub async fn collect_all_gpus() -> Option<Vec<GpuMetrics>> {
     None
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 mod worker {
     use super::GpuMetrics;
     use once_cell::sync::OnceCell;
@@ -120,6 +131,160 @@ mod worker {
                 handle = None;
             }
             let _ = reply.send(out.filter(|v| !v.is_empty()));
+        }
+    }
+}
+
+/// GPU metrics from the IORegistry's `IOAccelerator` services.
+///
+/// Replaces gfxinfo on macOS: gfxinfo 0.1.2 releases the properties dictionary
+/// (and a child it only borrows) more than once per query, and CoreFoundation
+/// on recent macOS traps on that — killing the whole agent with SIGTRAP on the
+/// first metrics request. Here every CoreFoundation / IOKit object has exactly
+/// one owner, released by `Drop`.
+#[cfg(all(feature = "gpu", target_os = "macos"))]
+mod macos {
+    use super::GpuMetrics;
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::data::CFData;
+    use core_foundation::dictionary::{CFDictionary, CFMutableDictionaryRef};
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use io_kit_sys::types::io_object_t;
+    use io_kit_sys::{
+        IOIteratorNext, IOObjectRelease, IORegistryEntryCreateCFProperties,
+        IOServiceGetMatchingServices, IOServiceMatching, kIOMasterPortDefault,
+    };
+
+    /// Owned IOKit object handle (iterator or registry entry).
+    struct IoObject(io_object_t);
+
+    impl Drop for IoObject {
+        fn drop(&mut self) {
+            // SAFETY: we own exactly one reference to this non-zero handle.
+            unsafe { IOObjectRelease(self.0) };
+        }
+    }
+
+    /// Look up `key`, returning a retained, type-erased value.
+    fn get(dict: &CFDictionary, key: &'static str) -> Option<CFType> {
+        let key = CFString::from_static_string(key);
+        let value = dict.find(key.as_CFTypeRef())?;
+        if value.is_null() {
+            return None;
+        }
+        // SAFETY: values in a property-list dictionary are CF objects; the
+        // dictionary only lends them to us, so retain (get rule).
+        Some(unsafe { CFType::wrap_under_get_rule(*value) })
+    }
+
+    fn number(dict: &CFDictionary, key: &'static str) -> Option<u64> {
+        let n = get(dict, key)?.downcast::<CFNumber>()?.to_i64()?;
+        u64::try_from(n).ok()
+    }
+
+    /// `model` is a string on Apple Silicon and NUL-terminated bytes on some
+    /// Intel/AMD drivers.
+    fn model(dict: &CFDictionary) -> Option<String> {
+        let value = get(dict, "model")?;
+        let name = if let Some(s) = value.downcast::<CFString>() {
+            s.to_string()
+        } else {
+            let data = value.downcast::<CFData>()?;
+            String::from_utf8_lossy(data.bytes()).into_owned()
+        };
+        let name = name.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    /// Properties of one registry entry, as an owned dictionary.
+    fn properties(entry: &IoObject) -> Option<CFDictionary> {
+        let mut props: CFMutableDictionaryRef = std::ptr::null_mut();
+        // SAFETY: `entry` is a live registry entry and `props` a valid out
+        // pointer. On success we own the created dictionary (create rule).
+        unsafe {
+            if IORegistryEntryCreateCFProperties(entry.0, &mut props, std::ptr::null(), 0) != 0
+                || props.is_null()
+            {
+                return None;
+            }
+            Some(CFDictionary::wrap_under_create_rule(props as _))
+        }
+    }
+
+    /// Dedicated GPU memory in use. Apple Silicon has none — GPU memory is
+    /// system RAM, already reported as memory — so report 0 there instead of
+    /// passing off the driver's system-memory figure as VRAM.
+    fn vram_used(stats: &CFDictionary) -> u64 {
+        if cfg!(target_arch = "aarch64") {
+            0
+        } else {
+            number(stats, "In use system memory").unwrap_or(0)
+        }
+    }
+
+    pub fn collect() -> Option<Vec<GpuMetrics>> {
+        // SAFETY: IOServiceMatching returns a +1 dictionary which
+        // IOServiceGetMatchingServices consumes, success or not.
+        let iter = unsafe {
+            let matching = IOServiceMatching(c"IOAccelerator".as_ptr());
+            if matching.is_null() {
+                return None;
+            }
+            let mut iter: io_object_t = 0;
+            if IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &mut iter) != 0
+                || iter == 0
+            {
+                return None;
+            }
+            IoObject(iter)
+        };
+
+        let mut gpus = Vec::new();
+        loop {
+            // SAFETY: `iter` is a live iterator; a non-zero result is a +1 entry.
+            let entry = match unsafe { IOIteratorNext(iter.0) } {
+                0 => break,
+                e => IoObject(e),
+            };
+            let Some(props) = properties(&entry) else {
+                continue;
+            };
+            // Accelerators without live statistics (e.g. a powered-down
+            // discrete GPU) have nothing to report.
+            let Some(stats) =
+                get(&props, "PerformanceStatistics").and_then(|v| v.downcast::<CFDictionary>())
+            else {
+                continue;
+            };
+            gpus.push(GpuMetrics {
+                name: model(&props).unwrap_or_else(|| "GPU".into()),
+                utilization_gpu_pct: number(&stats, "Device Utilization %").unwrap_or(0).min(100)
+                    as u32,
+                mem_used_bytes: vram_used(&stats),
+                // The registry exposes no VRAM total; 0 means "unknown / none"
+                // and clients show no VRAM readout for it.
+                mem_total_bytes: 0,
+            });
+        }
+        (!gpus.is_empty()).then_some(gpus)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Regression: the previous backend double-released CoreFoundation
+        /// objects, which aborts the process rather than failing a query.
+        /// Repeated collection must survive and stay self-consistent.
+        #[test]
+        fn repeated_collection_is_stable() {
+            for _ in 0..200 {
+                if let Some(gpus) = super::collect() {
+                    for g in gpus {
+                        assert!(!g.name.is_empty());
+                        assert!(g.utilization_gpu_pct <= 100);
+                    }
+                }
+            }
         }
     }
 }
